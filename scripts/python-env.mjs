@@ -24,6 +24,11 @@ function run(command, args, options = {}) {
   const result = spawnSync(isWindowsNpm ? 'npm.cmd' : command, args, {
     cwd: projectRoot,
     encoding: 'utf8',
+    env: {
+      ...process.env,
+      PYTHONIOENCODING: 'utf-8',
+      PYTHONUTF8: '1'
+    },
     stdio: options.capture ? 'pipe' : 'inherit',
     shell: isWindowsNpm,
     ...options
@@ -63,6 +68,15 @@ function pythonVersion(command, prefixArgs = []) {
   }
 }
 
+function compatiblePython(version) {
+  return Boolean(
+    version &&
+      version.major === 3 &&
+      version.minor >= 9 &&
+      version.minor <= 13
+  );
+}
+
 function findSystemPython() {
   const candidates =
     process.platform === 'win32'
@@ -88,12 +102,7 @@ function findSystemPython() {
 
   for (const [command, prefixArgs] of candidates) {
     const version = pythonVersion(command, prefixArgs);
-    if (
-      version &&
-      version.major === 3 &&
-      version.minor >= 9 &&
-      version.minor <= 13
-    ) {
+    if (compatiblePython(version)) {
       return version;
     }
   }
@@ -103,22 +112,44 @@ function findSystemPython() {
   );
 }
 
-function backendImportsWork() {
-  if (!fs.existsSync(virtualPython)) return false;
+function backendImportStatus() {
+  if (!fs.existsSync(virtualPython)) {
+    return {
+      ok: false,
+      detail: 'No existe el ejecutable del entorno virtual.'
+    };
+  }
   try {
     run(
       virtualPython,
       ['-c', 'import fastapi, uvicorn, multipart, duckdb, pandas, openpyxl'],
       { capture: true }
     );
-    return true;
-  } catch {
-    return false;
+    return { ok: true, detail: '' };
+  } catch (error) {
+    return { ok: false, detail: error.message };
   }
 }
 
 export function ensureBackendReady({ forceInstall = false } = {}) {
-  if (!fs.existsSync(virtualPython)) {
+  const currentVersion = fs.existsSync(virtualPython)
+    ? pythonVersion(virtualPython)
+    : null;
+
+  if (fs.existsSync(virtualPython) && !compatiblePython(currentVersion)) {
+    const python = findSystemPython();
+    console.log(
+      `El entorno anterior usa ${currentVersion?.label ?? 'una versión desconocida'}. Reconstruyendo con ${python.label}...`
+    );
+    run(python.command, [
+      ...python.prefixArgs,
+      '-m',
+      'venv',
+      '--clear',
+      virtualEnvironmentDirectory
+    ]);
+    forceInstall = true;
+  } else if (!fs.existsSync(virtualPython)) {
     const python = findSystemPython();
     console.log(`Preparando backend con ${python.label}...`);
     run(python.command, [
@@ -130,7 +161,8 @@ export function ensureBackendReady({ forceInstall = false } = {}) {
     forceInstall = true;
   }
 
-  if (forceInstall || !backendImportsWork()) {
+  let importStatus = backendImportStatus();
+  if (forceInstall || !importStatus.ok) {
     console.log('Instalando dependencias de Python...');
     run(virtualPython, [
       '-m',
@@ -140,11 +172,12 @@ export function ensureBackendReady({ forceInstall = false } = {}) {
       '-r',
       path.join(backendDirectory, 'requirements.txt')
     ]);
+    importStatus = backendImportStatus();
   }
 
-  if (!backendImportsWork()) {
+  if (!importStatus.ok) {
     throw new Error(
-      'El backend se instaló, pero sus dependencias no se pueden importar.'
+      `El backend se instaló, pero una dependencia no se puede importar:\n${importStatus.detail}`
     );
   }
 

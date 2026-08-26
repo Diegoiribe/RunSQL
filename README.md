@@ -68,6 +68,27 @@ No requiere permisos de administrador si Node.js y Python ya están instalados
 para el usuario. Si la empresa bloquea la instalación de software, será necesario
 pedir a Sistemas que instale esas dos herramientas.
 
+### Reparar el entorno de Python en Windows
+
+Si el frontend abre pero el backend informa que una dependencia no se puede
+importar, confirma primero que Python 3.12 esté disponible:
+
+```powershell
+py -3.12 --version
+```
+
+Después reconstruye únicamente el entorno generado de Windows:
+
+```powershell
+Remove-Item -Recurse -Force .\backend\.venv-windows
+npm.cmd run setup
+npm.cmd run dev
+```
+
+La carpeta del proyecto puede contener espacios y acentos. El iniciador configura
+la consola y Python en UTF-8 para conservar correctamente rutas como
+`Documents\Programación\RunSQL`.
+
 También se puede iniciar todo con:
 
 ```bash
