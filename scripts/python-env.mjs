@@ -121,19 +121,19 @@ function ensureWindowsRuntime() {
     'Microsoft.VCLibs.x64.14.00.Desktop.appx'
   );
 
-  const escapedUrl = windowsRuntimePackage.url.replaceAll("'", "''");
-  const escapedDestination = packagePath.replaceAll("'", "''");
-  const downloadCommand = [
-    "$ErrorActionPreference = 'Stop'",
-    "$ProgressPreference = 'SilentlyContinue'",
-    `[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12`,
-    `Invoke-WebRequest -UseBasicParsing -Uri '${escapedUrl}' -OutFile '${escapedDestination}'`
-  ].join('; ');
-
   try {
     run(
-      'powershell.exe',
-      ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', downloadCommand],
+      virtualPython,
+      [
+        '-c',
+        [
+          'import pathlib, shutil, urllib.request',
+          `url = ${JSON.stringify(windowsRuntimePackage.url)}`,
+          `destination = pathlib.Path(${JSON.stringify(packagePath)})`,
+          "request = urllib.request.Request(url, headers={'User-Agent': 'RunSQL/0.1'})",
+          'with urllib.request.urlopen(request, timeout=120) as response, destination.open(\'wb\') as output: shutil.copyfileobj(response, output)'
+        ].join('\n')
+      ],
       { capture: true }
     );
 
