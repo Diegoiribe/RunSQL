@@ -65,8 +65,11 @@ backend.
 - Acceso a internet únicamente durante la primera instalación de dependencias.
 
 No requiere permisos de administrador si Node.js y Python ya están instalados
-para el usuario. Si la empresa bloquea la instalación de software, será necesario
-pedir a Sistemas que instale esas dos herramientas.
+para el usuario. En Windows, cuando hace falta, `npm run setup` descarga el
+runtime oficial de Microsoft Visual C++ y lo guarda únicamente en
+`backend/.runtime-windows`.
+No instala componentes en Windows, no modifica el registro y no afecta a otros
+usuarios.
 
 ### Reparar el entorno de Python en Windows
 
@@ -89,14 +92,20 @@ La carpeta del proyecto puede contener espacios y acentos. El iniciador configur
 la consola y Python en UTF-8 para conservar correctamente rutas como
 `Documents\Programación\RunSQL`.
 
-Si el error menciona `DLL load failed while importing duckdb`, instala el paquete
-oficial **Microsoft Visual C++ Redistributable x64**:
+Si el error menciona `DLL load failed while importing duckdb`, no ejecutes el
+instalador de Visual C++ que solicita administrador. Reconstruye la preparación
+local del proyecto:
 
-https://aka.ms/vs/17/release/vc_redist.x64.exe
+```powershell
+Remove-Item -Recurse -Force .\backend\.runtime-windows -ErrorAction SilentlyContinue
+npm.cmd run setup
+npm.cmd run dev
+```
 
-En una computadora corporativa puede ser necesario pedir a Sistemas que realice
-esta instalación. Después, cierra PowerShell, abre una terminal nueva y ejecuta
-`npm.cmd run dev`.
+El paquete se descarga desde `download.microsoft.com`, se verifica por SHA-256 y
+solo se extraen sus DLL dentro del proyecto. Si la política corporativa bloquea
+la descarga, puedes preparar esa carpeta en otra computadora Windows y copiarla
+junto con el proyecto.
 
 También se puede iniciar todo con:
 

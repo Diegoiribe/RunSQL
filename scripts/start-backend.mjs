@@ -1,6 +1,10 @@
 import { spawn } from 'node:child_process';
 
-import { ensureBackendReady, projectRoot } from './python-env.mjs';
+import {
+  backendEnvironment,
+  ensureBackendReady,
+  projectRoot
+} from './python-env.mjs';
 
 let child;
 
@@ -20,7 +24,7 @@ try {
     ],
     {
       cwd: projectRoot,
-      env: { ...process.env, PYTHONUNBUFFERED: '1' },
+      env: backendEnvironment({ PYTHONUNBUFFERED: '1' }),
       stdio: 'inherit',
       shell: false
     }

@@ -2,6 +2,7 @@
 .env
 .venv/
 .venv-windows/
+.runtime-windows/
 __pycache__/
 *.py[cod]
 frontend/node_modules/

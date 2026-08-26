@@ -1,6 +1,10 @@
 import { spawnSync } from 'node:child_process';
 
-import { ensureBackendReady, projectRoot } from './python-env.mjs';
+import {
+  backendEnvironment,
+  ensureBackendReady,
+  projectRoot
+} from './python-env.mjs';
 
 try {
   const python = ensureBackendReady();
@@ -9,7 +13,7 @@ try {
     ['-m', 'unittest', 'discover', '-s', 'backend/tests'],
     {
       cwd: projectRoot,
-      env: { ...process.env, PYTHONPATH: 'backend' },
+      env: backendEnvironment({ PYTHONPATH: 'backend' }),
       stdio: 'inherit',
       shell: false
     }
