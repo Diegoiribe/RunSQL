@@ -4,7 +4,7 @@ import unittest
 from fastapi import HTTPException
 from starlette.datastructures import UploadFile
 
-from app.catalog import build_catalog
+from app.catalog import build_catalog, definition_targets
 from app.main import execute, match_definition, match_family, prepare_exports, prepare_statements, split_sql_script, validate_sql
 
 RULES_SQL = """
@@ -48,6 +48,82 @@ class RunSqlTests(unittest.IsolatedAsyncioTestCase):
         )
         family, period = match_family("almacenista P12.xlsx", families)
         self.assertEqual(family.table_name, "almacenista_p")
+        self.assertEqual(period, 12)
+
+    def test_catalog_supports_multiple_adaptive_period_families(self):
+        rules_sql = """
+        CREATE OR REPLACE TABLE cat_detalle_operacion AS
+        SELECT * FROM read_xlsx('/fuentes/CAT Operacion Detalle.xlsx', sheet = 'Hoja1');
+        CREATE OR REPLACE TABLE cat_detalle_gerencial AS
+        SELECT * FROM read_xlsx('/fuentes/CAT Gerencial Detalle.xlsx', sheet = 'Hoja1');
+        SELECT * FROM cat_operacion_p;
+        SELECT * FROM cat_gerencial_p;
+        """
+        definitions, families = build_catalog(rules_sql, "CAT.sql")
+        self.assertEqual(
+            [item.name for item in definitions],
+            ["CAT Operacion Detalle", "CAT Gerencial Detalle"],
+        )
+        self.assertEqual(
+            [item.name for item in families],
+            ["CAT Operacion P(x)", "CAT Gerencial P(x)"],
+        )
+        operation, period = match_family("CAT OPERACIÓN P3.xlsx", families)
+        self.assertEqual(operation.table_name, "cat_operacion_p")
+        self.assertEqual(period, 3)
+        management, period = match_family("cat gerencial p12.xlsx", families)
+        self.assertEqual(management.table_name, "cat_gerencial_p")
+        self.assertEqual(period, 12)
+
+    def test_catalog_groups_multiple_sheets_from_one_workbook(self):
+        rules_sql = """
+        CREATE OR REPLACE TABLE plan_staff_fuente AS
+        SELECT * FROM read_xlsx('/fuentes/Concentrado Staff.xlsx', sheet = 'Plan capacitacion');
+        CREATE OR REPLACE TABLE historico_staff_fuente AS
+        SELECT * FROM read_xlsx('/fuentes/Concentrado Staff.xlsx', sheet = 'Historico Staff');
+        CREATE OR REPLACE TABLE demograficos_staff_fuente AS
+        SELECT * FROM read_xlsx('/fuentes/STAFF Demograficos.xlsx', sheet = 'Sheet1', range = 'A2:Z');
+        SELECT * FROM staff_p;
+        """
+        definitions, families = build_catalog(rules_sql, "STAFF.sql")
+        self.assertEqual(len(definitions), 2)
+        concentrated = next(item for item in definitions if item.name == "Concentrado Staff")
+        self.assertEqual(
+            [(target.table_name, target.sheet_name) for target in definition_targets(concentrated)],
+            [
+                ("plan_staff_fuente", "Plan capacitacion"),
+                ("historico_staff_fuente", "Historico Staff"),
+            ],
+        )
+        demographics = next(item for item in definitions if item.table_name == "demograficos_staff_fuente")
+        self.assertEqual(definition_targets(demographics)[0].range_name, "A2:Z")
+        self.assertEqual(families[0].table_name, "staff_p")
+
+    def test_staff_catalog_accepts_confidential_demographics_and_periods(self):
+        rules_sql = """
+        CREATE OR REPLACE TABLE demograficos_staff_fuente AS
+        SELECT * FROM read_xlsx(
+            '/fuentes/EIC CONFIDENCIAL - Planta Activa Demograficos GC.xlsx',
+            sheet = 'Sheet1', range = 'A2:Z'
+        );
+        CREATE OR REPLACE TABLE jerarquia_staff_fuente AS
+        SELECT * FROM read_xlsx(
+            '/fuentes/EIC CONFIDENCIAL - Jerarquia Planta Activa Demograficos GC (7).xlsx',
+            sheet = 'Sheet1', range = 'A3:P'
+        );
+        SELECT * FROM staff_p;
+        """
+        definitions, families = build_catalog(rules_sql, "STAFF.sql")
+        self.assertEqual(
+            [definition.name for definition in definitions],
+            ["STAFF Demograficos", "STAFF Jerarquia"],
+        )
+        demographics = match_definition(
+            "eic confidencial - planta activa demograficos gc.XLSX", definitions
+        )
+        self.assertEqual(demographics.table_name, "demograficos_staff_fuente")
+        family, period = match_family("staff p12.xlsx", families)
+        self.assertEqual(family.table_name, "staff_p")
         self.assertEqual(period, 12)
 
     def test_sql_guard_blocks_file_access(self):

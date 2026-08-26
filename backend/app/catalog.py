@@ -7,6 +7,13 @@ from pathlib import Path
 
 
 @dataclass(frozen=True)
+class FileTarget:
+    table_name: str
+    sheet_name: str | int = 0
+    range_name: str = ""
+
+
+@dataclass(frozen=True)
 class FileDefinition:
     key: str
     name: str
@@ -15,6 +22,8 @@ class FileDefinition:
     aliases: tuple[str, ...] = ()
     description: str = ""
     sheet_name: str | int = 0
+    range_name: str = ""
+    targets: tuple[FileTarget, ...] = ()
 
     def public_dict(self) -> dict:
         value = asdict(self)
@@ -106,6 +115,18 @@ SOURCE_PATTERN = re.compile(
 )
 
 
+def definition_targets(definition: FileDefinition) -> tuple[FileTarget, ...]:
+    if definition.targets:
+        return definition.targets
+    return (
+        FileTarget(
+            table_name=definition.table_name,
+            sheet_name=definition.sheet_name,
+            range_name=definition.range_name,
+        ),
+    )
+
+
 def normalize_label(value: str) -> str:
     value = unicodedata.normalize("NFKD", value)
     value = "".join(character for character in value if not unicodedata.combining(character))
@@ -132,12 +153,20 @@ def source_display_name(process: str, table_name: str) -> str:
         return "Datos Tienda"
     if "plan" in tokens and "capacitacion" in tokens:
         return f"Plan de Capacitación {process}"
+    if "planta" in tokens and "posiciones" in tokens:
+        return f"Planta de {process} por Posiciones"
+    if "planta" in tokens and any(token.startswith("centro") for token in tokens):
+        return f"Planta de {process} por Centro"
     if "detalle" in tokens:
         qualifiers = [token for token in tokens if token not in process_tokens and token != "detalle"]
         suffix = f" {identifier_label('_'.join(qualifiers))}" if qualifiers else ""
-        return f"{process} Detalle{suffix}"
+        return f"{process}{suffix} Detalle"
 
-    remainder = [token for token in tokens if token not in process_tokens]
+    remainder = [
+        token
+        for token in tokens
+        if token not in process_tokens and token not in {"fuente", "source"}
+    ]
     return f"{process} {identifier_label('_'.join(remainder))}".strip()
 
 
@@ -147,6 +176,7 @@ def build_catalog(sql: str, sql_filename: str) -> tuple[tuple[FileDefinition, ..
     source_matches = list(SOURCE_PATTERN.finditer(sql))
     period_sources: dict[str, list[tuple[str, str]]] = {}
     definitions: list[FileDefinition] = []
+    source_groups: dict[str, list[tuple[str, str, str]]] = {}
 
     for match in source_matches:
         table_name, source_path, options = match.groups()
@@ -157,23 +187,51 @@ def build_catalog(sql: str, sql_filename: str) -> tuple[tuple[FileDefinition, ..
             period_sources.setdefault(f"{family_table}_p", []).append((period, original_stem))
             continue
 
-        sheet_match = re.search(r"\bsheet\s*=\s*'([^']+)'", options, flags=re.IGNORECASE)
-        display_name = source_display_name(process, table_name)
-        aliases = {
-            original_stem,
-            table_name,
-            display_name,
-            f"{process} {identifier_label(table_name)}",
-        }
+        source_groups.setdefault(normalize_label(source_path), []).append(
+            (table_name, source_path, options)
+        )
+
+    for grouped_sources in source_groups.values():
+        first_table, first_path, _ = grouped_sources[0]
+        original_stem = Path(first_path).stem
+        targets: list[FileTarget] = []
+        aliases = {original_stem}
+        for table_name, _, options in grouped_sources:
+            sheet_match = re.search(r"\bsheet\s*=\s*'([^']+)'", options, flags=re.IGNORECASE)
+            range_match = re.search(r"\brange\s*=\s*'([^']+)'", options, flags=re.IGNORECASE)
+            target_display_name = source_display_name(process, table_name)
+            aliases.update(
+                {
+                    table_name,
+                    target_display_name,
+                    f"{process} {identifier_label(table_name)}",
+                }
+            )
+            targets.append(
+                FileTarget(
+                    table_name=table_name.lower(),
+                    sheet_name=sheet_match.group(1) if sheet_match else 0,
+                    range_name=range_match.group(1) if range_match else "",
+                )
+            )
+
+        display_name = (
+            original_stem
+            if len(targets) > 1
+            else source_display_name(process, first_table)
+        )
+        primary = targets[0]
         definitions.append(
             FileDefinition(
-                key=f"{process_key}:{table_name.lower()}",
+                key=f"{process_key}:{first_table.lower()}",
                 name=display_name,
-                table_name=table_name.lower(),
+                table_name=primary.table_name,
                 required=True,
                 aliases=tuple(sorted(aliases)),
                 description="",
-                sheet_name=sheet_match.group(1) if sheet_match else 0,
+                sheet_name=primary.sheet_name,
+                range_name=primary.range_name,
+                targets=tuple(targets),
             )
         )
 
@@ -205,20 +263,38 @@ def build_catalog(sql: str, sql_filename: str) -> tuple[tuple[FileDefinition, ..
 
     if not families and sql_filename and Path(sql_filename).stem.lower() != "consulta":
         combined_matches = re.findall(r"\b([a-z][a-z0-9_]*_p)\b", sql, flags=re.IGNORECASE)
-        preferred = next(
-            (value for value in combined_matches if process_key.split("_")[0] in value.lower()),
-            combined_matches[0] if combined_matches else f"{process_key}_p",
-        )
-        families.append(
-            FileFamily(
-                key=f"{process_key}:periodos:0",
-                name=f"{process} P(x)",
-                table_name=preferred.lower(),
-                required=True,
-                min_files=1,
-                prefixes=(process,),
-                description=f"Periodos adaptativos de {process}.",
+        process_root = process_key.split("_")[0]
+        preferred_matches = [
+            value.lower() for value in combined_matches if process_root in value.lower()
+        ]
+        inferred_tables = list(dict.fromkeys(preferred_matches))
+        if not inferred_tables:
+            inferred_tables = [f"{process_key}_p"]
+
+        for index, table_name in enumerate(inferred_tables):
+            qualifier = table_name.removesuffix("_p")
+            qualifier_tokens = [
+                token
+                for token in normalize_label(qualifier).split()
+                if token not in set(normalize_label(process).split())
+            ]
+            qualifier_label = (
+                f" {identifier_label('_'.join(qualifier_tokens))}"
+                if len(inferred_tables) > 1 and qualifier_tokens
+                else ""
             )
-        )
+            family_name = f"{process}{qualifier_label} P(x)"
+            family_prefix = f"{process}{qualifier_label}"
+            families.append(
+                FileFamily(
+                    key=f"{process_key}:periodos:{index}",
+                    name=family_name,
+                    table_name=table_name,
+                    required=True,
+                    min_files=1,
+                    prefixes=(family_prefix,),
+                    description=f"Periodos adaptativos de {process}{qualifier_label}.",
+                )
+            )
 
     return tuple(definitions), tuple(families)

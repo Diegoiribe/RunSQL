@@ -3,8 +3,10 @@
   "private": true,
   "version": "0.1.0",
   "scripts": {
-    "dev": "concurrently -k -n frontend,backend -c white,gray \"npm --prefix frontend run dev\" \"backend/.venv/bin/python -m uvicorn backend.app.main:app --reload --host 127.0.0.1\"",
-    "build": "npm --prefix frontend run build"
+    "setup": "node scripts/setup.mjs",
+    "dev": "concurrently -k -n frontend,backend -c white,gray \"npm --prefix frontend run dev\" \"node scripts/start-backend.mjs\"",
+    "build": "npm --prefix frontend run build",
+    "test:backend": "node scripts/test-backend.mjs"
   },
   "devDependencies": {
     "concurrently": "^9.2.1"

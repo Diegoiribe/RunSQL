@@ -12,7 +12,14 @@ import pandas as pd
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
-from .catalog import FILE_CATALOG, FILE_FAMILIES, FileDefinition, FileFamily, build_catalog
+from .catalog import (
+    FILE_CATALOG,
+    FILE_FAMILIES,
+    FileDefinition,
+    FileFamily,
+    build_catalog,
+    definition_targets,
+)
 
 IS_VERCEL = bool(os.getenv("VERCEL"))
 MAX_FILE_SIZE_MB = int(os.getenv("MAX_FILE_SIZE_MB", "4" if IS_VERCEL else "200"))
@@ -157,7 +164,11 @@ def prepare_statements(
     definitions: tuple[FileDefinition, ...] = FILE_CATALOG,
     families: tuple[FileFamily, ...] = FILE_FAMILIES,
 ) -> list[tuple[str, bool]]:
-    source_tables = {item.table_name for item in definitions}
+    source_tables = {
+        target.table_name
+        for definition in definitions
+        for target in definition_targets(definition)
+    }
     source_tables.update(item.table_name for item in families)
     prepared: list[tuple[str, bool]] = []
 
@@ -237,7 +248,12 @@ def prepare_exports(sql: str) -> list[tuple[str, str, str]]:
     return exports
 
 
-def read_dataframe(filename: str, payload: bytes, sheet_name: str | int = 0) -> pd.DataFrame:
+def read_dataframe(
+    filename: str,
+    payload: bytes,
+    sheet_name: str | int = 0,
+    range_name: str = "",
+) -> pd.DataFrame:
     extension = Path(filename).suffix.lower()
     try:
         if extension == ".csv":
@@ -245,7 +261,24 @@ def read_dataframe(filename: str, payload: bytes, sheet_name: str | int = 0) -> 
                 return pd.read_csv(io.BytesIO(payload), encoding="utf-8-sig")
             except UnicodeDecodeError:
                 return pd.read_csv(io.BytesIO(payload), encoding="latin-1")
-        return pd.read_excel(io.BytesIO(payload), sheet_name=sheet_name, dtype=str)
+        skiprows = None
+        usecols = None
+        if range_name:
+            range_match = re.fullmatch(
+                r"([A-Za-z]+)(\d+):([A-Za-z]+)(?:\d+)?", range_name.strip()
+            )
+            if not range_match:
+                raise ValueError(f"el rango '{range_name}' no es compatible")
+            first_column, first_row, last_column = range_match.groups()
+            skiprows = max(int(first_row) - 1, 0)
+            usecols = f"{first_column}:{last_column}"
+        return pd.read_excel(
+            io.BytesIO(payload),
+            sheet_name=sheet_name,
+            dtype=str,
+            skiprows=skiprows,
+            usecols=usecols,
+        )
     except Exception as error:
         raise HTTPException(
             status_code=400,
@@ -316,7 +349,10 @@ async def execute(
     definitions, families = build_catalog(rules_sql, sql_filename)
     statements = prepare_statements(sql, definitions, families)
     exports = [] if preview_table else prepare_exports(sql)
-    loaded: dict[str, tuple[str, str, str, pd.DataFrame, str, str | None]] = {}
+    loaded: dict[
+        str,
+        tuple[str, str, list[tuple[str, pd.DataFrame]], str, str | None],
+    ] = {}
 
     for upload in files:
         filename = upload.filename or "archivo"
@@ -336,13 +372,11 @@ async def execute(
         if definition is not None:
             upload_key = definition.key
             display_name = definition.name
-            table_name = definition.table_name
             family_key = None
         else:
             family, period = family_match
             upload_key = f"{family.key}:p{period}"
             display_name = f"{family.prefixes[0].title()} P{period}"
-            table_name = f"{family.table_name}{period}"
             family_key = family.key
 
         if upload_key in loaded:
@@ -354,12 +388,27 @@ async def execute(
                 status_code=413,
                 detail=f"{filename} supera el límite de {MAX_FILE_SIZE_MB} MB.",
             )
-        sheet_name = definition.sheet_name if definition is not None else 0
+        if definition is not None:
+            target_frames = [
+                (
+                    target.table_name,
+                    read_dataframe(
+                        filename,
+                        payload,
+                        target.sheet_name,
+                        target.range_name,
+                    ),
+                )
+                for target in definition_targets(definition)
+            ]
+        else:
+            target_frames = [
+                (f"{family.table_name}{period}", read_dataframe(filename, payload))
+            ]
         loaded[upload_key] = (
             upload_key,
             display_name,
-            table_name,
-            read_dataframe(filename, payload, sheet_name),
+            target_frames,
             filename,
             family_key,
         )
@@ -369,7 +418,7 @@ async def execute(
         raise HTTPException(status_code=400, detail=f"Faltan archivos requeridos: {', '.join(missing)}.")
 
     for family in families:
-        family_count = sum(1 for item in loaded.values() if item[5] == family.key)
+        family_count = sum(1 for item in loaded.values() if item[4] == family.key)
         if family.required and family_count < family.min_files:
             raise HTTPException(
                 status_code=400,
@@ -381,28 +430,31 @@ async def execute(
     )
     try:
         loaded_files = []
-        for _, display_name, table_name, dataframe, filename, _ in loaded.values():
-            connection.register(table_name, dataframe)
-            escaped_name = display_name.replace('"', '""')
-            connection.execute(
-                f'CREATE VIEW "{escaped_name}" AS SELECT * FROM "{table_name}"'
-            )
-            loaded_files.append(
-                {
-                    "name": display_name,
-                    "filename": filename,
-                    "table_name": table_name,
-                    "rows": len(dataframe.index),
-                    "columns": [str(column) for column in dataframe.columns],
-                }
-            )
+        for _, display_name, target_frames, filename, _ in loaded.values():
+            for target_index, (table_name, dataframe) in enumerate(target_frames):
+                connection.register(table_name, dataframe)
+                if target_index == 0:
+                    escaped_name = display_name.replace('"', '""')
+                    connection.execute(
+                        f'CREATE VIEW "{escaped_name}" AS SELECT * FROM "{table_name}"'
+                    )
+                loaded_files.append(
+                    {
+                        "name": display_name,
+                        "filename": filename,
+                        "table_name": table_name,
+                        "rows": len(dataframe.index),
+                        "columns": [str(column) for column in dataframe.columns],
+                    }
+                )
 
         for family in families:
             period_frames = []
-            for upload_key, _, _, dataframe, _, family_key in loaded.values():
+            for upload_key, _, target_frames, _, family_key in loaded.values():
                 if family_key != family.key:
                     continue
                 period = upload_key.rsplit(":p", 1)[1]
+                dataframe = target_frames[0][1]
                 frame = dataframe.copy()
                 frame["periodo"] = f"P{period}"
                 period_frames.append(frame)

@@ -9,29 +9,64 @@ Aplicación web para cargar archivos Excel/CSV con nombres estandarizados, conve
 - **Motor SQL:** DuckDB en memoria.
 - Los archivos se procesan durante la petición y no se almacenan en disco.
 
-## Ejecutar en desarrollo
+## Ejecutar localmente en macOS y Windows
 
-Requiere Python 3.9+ y Node.js 20+.
+Requiere Python 3.9 a 3.13 y Node.js 20 o posterior. Se recomienda Python 3.12.
 
-### Primera instalación
+La aplicación utiliza los mismos archivos y la misma interfaz en ambos sistemas.
+El iniciador detecta automáticamente la plataforma, crea el entorno de Python
+correcto e inicia React y FastAPI al mismo tiempo.
+
+### Opción rápida en macOS
+
+Abre `start-mac.command` con doble clic.
+
+Si macOS bloquea el archivo la primera vez, desde una terminal ejecuta:
 
 ```bash
-cd backend
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-cd ..
-npm install
-npm --prefix frontend install
+chmod +x start-mac.command
+./start-mac.command
 ```
 
-### Levantar toda la aplicación
+### Opción rápida en Windows
+
+Abre `start-windows.bat` con doble clic.
+
+No necesitas activar manualmente el entorno virtual. Windows utiliza
+`backend/.venv-windows` y macOS utiliza `backend/.venv`, por lo que una copia del
+proyecto puede moverse entre ambas computadoras sin mezclar ejecutables.
+
+### Instalación desde terminal
+
+Los siguientes comandos son iguales en PowerShell, Símbolo del sistema y la
+Terminal de macOS:
+
+```bash
+npm install
+npm run setup
+npm run dev
+```
+
+Después de la primera preparación, normalmente basta con:
 
 ```bash
 npm run dev
 ```
 
-Este único comando levanta React en `http://localhost:5173` y FastAPI en `http://localhost:8000`. Vite envía automáticamente las solicitudes `/api` al backend.
+`npm run dev` levanta React en `http://localhost:5173` y FastAPI en
+`http://localhost:8000`. Vite envía automáticamente las solicitudes `/api` al
+backend.
+
+### Requisitos en la computadora del trabajo
+
+- Node.js 20 o posterior.
+- Python 3.9 a 3.13; se recomienda Python 3.12.
+- Permiso para ejecutar programas desde la carpeta del proyecto.
+- Acceso a internet únicamente durante la primera instalación de dependencias.
+
+No requiere permisos de administrador si Node.js y Python ya están instalados
+para el usuario. Si la empresa bloquea la instalación de software, será necesario
+pedir a Sistemas que instale esas dos herramientas.
 
 También se puede iniciar todo con:
 
@@ -42,8 +77,7 @@ docker compose up --build
 Para ejecutar las pruebas del backend:
 
 ```bash
-cd backend
-.venv/bin/python -m unittest
+npm run test:backend
 ```
 
 ## Estandarizar archivos

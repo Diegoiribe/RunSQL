@@ -1,0 +1,157 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+
+export const projectRoot = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '..'
+);
+
+const backendDirectory = path.join(projectRoot, 'backend');
+const virtualEnvironmentDirectory = path.join(
+  backendDirectory,
+  process.platform === 'win32' ? '.venv-windows' : '.venv'
+);
+
+export const virtualPython =
+  process.platform === 'win32'
+    ? path.join(virtualEnvironmentDirectory, 'Scripts', 'python.exe')
+    : path.join(virtualEnvironmentDirectory, 'bin', 'python');
+
+function run(command, args, options = {}) {
+  const isWindowsNpm = process.platform === 'win32' && command === 'npm';
+  const result = spawnSync(isWindowsNpm ? 'npm.cmd' : command, args, {
+    cwd: projectRoot,
+    encoding: 'utf8',
+    stdio: options.capture ? 'pipe' : 'inherit',
+    shell: isWindowsNpm,
+    ...options
+  });
+
+  if (result.error) {
+    throw result.error;
+  }
+  if (result.status !== 0) {
+    const detail = options.capture
+      ? `${result.stdout ?? ''}${result.stderr ?? ''}`.trim()
+      : '';
+    throw new Error(
+      detail || `El comando ${command} terminó con código ${result.status}.`
+    );
+  }
+  return result;
+}
+
+function pythonVersion(command, prefixArgs = []) {
+  try {
+    const result = run(command, [...prefixArgs, '--version'], {
+      capture: true
+    });
+    const text = `${result.stdout ?? ''} ${result.stderr ?? ''}`.trim();
+    const match = text.match(/Python\s+(\d+)\.(\d+)/i);
+    if (!match) return null;
+    return {
+      command,
+      prefixArgs,
+      major: Number(match[1]),
+      minor: Number(match[2]),
+      label: text
+    };
+  } catch {
+    return null;
+  }
+}
+
+function findSystemPython() {
+  const candidates =
+    process.platform === 'win32'
+      ? [
+          ['py', ['-3.13']],
+          ['py', ['-3.12']],
+          ['py', ['-3.11']],
+          ['py', ['-3.10']],
+          ['py', ['-3.9']],
+          ['py', ['-3']],
+          ['python', []],
+          ['python3', []]
+        ]
+      : [
+          ['python3.13', []],
+          ['python3.12', []],
+          ['python3.11', []],
+          ['python3.10', []],
+          ['python3.9', []],
+          ['python3', []],
+          ['python', []]
+        ];
+
+  for (const [command, prefixArgs] of candidates) {
+    const version = pythonVersion(command, prefixArgs);
+    if (
+      version &&
+      version.major === 3 &&
+      version.minor >= 9 &&
+      version.minor <= 13
+    ) {
+      return version;
+    }
+  }
+
+  throw new Error(
+    'No se encontró una versión compatible de Python (3.9 a 3.13). Instala Python 3.12 desde https://www.python.org/downloads/ y vuelve a intentarlo.'
+  );
+}
+
+function backendImportsWork() {
+  if (!fs.existsSync(virtualPython)) return false;
+  try {
+    run(
+      virtualPython,
+      ['-c', 'import fastapi, uvicorn, multipart, duckdb, pandas, openpyxl'],
+      { capture: true }
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function ensureBackendReady({ forceInstall = false } = {}) {
+  if (!fs.existsSync(virtualPython)) {
+    const python = findSystemPython();
+    console.log(`Preparando backend con ${python.label}...`);
+    run(python.command, [
+      ...python.prefixArgs,
+      '-m',
+      'venv',
+      virtualEnvironmentDirectory
+    ]);
+    forceInstall = true;
+  }
+
+  if (forceInstall || !backendImportsWork()) {
+    console.log('Instalando dependencias de Python...');
+    run(virtualPython, [
+      '-m',
+      'pip',
+      'install',
+      '--disable-pip-version-check',
+      '-r',
+      path.join(backendDirectory, 'requirements.txt')
+    ]);
+  }
+
+  if (!backendImportsWork()) {
+    throw new Error(
+      'El backend se instaló, pero sus dependencias no se pueden importar.'
+    );
+  }
+
+  return virtualPython;
+}
+
+export function installFrontendDependencies() {
+  console.log('Instalando dependencias del frontend...');
+  run('npm', ['--prefix', 'frontend', 'install']);
+}
