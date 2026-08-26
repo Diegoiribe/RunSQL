@@ -89,6 +89,15 @@ La carpeta del proyecto puede contener espacios y acentos. El iniciador configur
 la consola y Python en UTF-8 para conservar correctamente rutas como
 `Documents\Programación\RunSQL`.
 
+Si el error menciona `DLL load failed while importing duckdb`, instala el paquete
+oficial **Microsoft Visual C++ Redistributable x64**:
+
+https://aka.ms/vs/17/release/vc_redist.x64.exe
+
+En una computadora corporativa puede ser necesario pedir a Sistemas que realice
+esta instalación. Después, cierra PowerShell, abre una terminal nueva y ejecuta
+`npm.cmd run dev`.
+
 También se puede iniciar todo con:
 
 ```bash

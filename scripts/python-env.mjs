@@ -21,7 +21,13 @@ export const virtualPython =
 
 function run(command, args, options = {}) {
   const isWindowsNpm = process.platform === 'win32' && command === 'npm';
-  const result = spawnSync(isWindowsNpm ? 'npm.cmd' : command, args, {
+  const executable = isWindowsNpm
+    ? process.env.ComSpec || 'C:\\Windows\\System32\\cmd.exe'
+    : command;
+  const executableArgs = isWindowsNpm
+    ? ['/d', '/s', '/c', 'npm.cmd', ...args]
+    : args;
+  const result = spawnSync(executable, executableArgs, {
     cwd: projectRoot,
     encoding: 'utf8',
     env: {
@@ -30,7 +36,7 @@ function run(command, args, options = {}) {
       PYTHONUTF8: '1'
     },
     stdio: options.capture ? 'pipe' : 'inherit',
-    shell: isWindowsNpm,
+    shell: false,
     ...options
   });
 
@@ -176,8 +182,13 @@ export function ensureBackendReady({ forceInstall = false } = {}) {
   }
 
   if (!importStatus.ok) {
+    const duckdbWindowsHelp =
+      process.platform === 'win32' &&
+      /duckdb[\s\S]*DLL load failed/i.test(importStatus.detail)
+        ? '\n\nDuckDB necesita Microsoft Visual C++ Redistributable x64. Instálalo desde https://aka.ms/vs/17/release/vc_redist.x64.exe, cierra la terminal y vuelve a ejecutar npm.cmd run dev.'
+        : '';
     throw new Error(
-      `El backend se instaló, pero una dependencia no se puede importar:\n${importStatus.detail}`
+      `El backend se instaló, pero una dependencia no se puede importar:\n${importStatus.detail}${duckdbWindowsHelp}`
     );
   }
 
