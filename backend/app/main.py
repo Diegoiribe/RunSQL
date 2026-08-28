@@ -9,8 +9,11 @@ from pathlib import Path
 
 import duckdb
 import pandas as pd
+from dotenv import load_dotenv
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+
+load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
 from .catalog import (
     FILE_CATALOG,
@@ -19,6 +22,16 @@ from .catalog import (
     FileFamily,
     build_catalog,
     definition_targets,
+)
+from .firebase_publish import (
+    FirebaseConfigurationError,
+    _firebase_client,
+    apply_cutoff_date,
+    build_dashboard_dataset,
+    category_from_filename,
+    decode_tabular_payload,
+    publish_dashboard,
+    validate_cutoff_date,
 )
 
 IS_VERCEL = bool(os.getenv("VERCEL"))
@@ -45,7 +58,8 @@ app = FastAPI(title="RunSQL API", version="0.1.0")
 allowed_origins = [
     origin.strip()
     for origin in os.getenv(
-        "CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173"
+        "CORS_ORIGINS",
+        "http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000,http://127.0.0.1:3000",
     ).split(",")
     if origin.strip()
 ]
@@ -301,6 +315,179 @@ def health() -> dict:
     return {"status": "ok"}
 
 
+def _dashboard_client():
+    try:
+        return _firebase_client()
+    except FirebaseConfigurationError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+
+
+def _validate_dashboard_path(value: str, pattern: str, label: str) -> str:
+    if not re.fullmatch(pattern, value):
+        raise HTTPException(status_code=400, detail=f"{label} no válido.")
+    return value
+
+
+@app.get("/api/dashboard/categories")
+def dashboard_categories() -> list[dict]:
+    try:
+        snapshots = _dashboard_client().collection("dashboard_categories").stream()
+        categories = []
+        for snapshot in snapshots:
+            data = snapshot.to_dict() or {}
+            categories.append(
+                {
+                    "key": snapshot.id,
+                    "label": str(data.get("category_label") or snapshot.id),
+                    "history": data.get("periods") or {},
+                }
+            )
+        return sorted(categories, key=lambda item: item["label"].casefold())
+    except HTTPException:
+        raise
+    except Exception as error:
+        raise HTTPException(
+            status_code=502,
+            detail=f"No se pudieron leer las categorías de Firebase: {error}",
+        ) from error
+
+
+@app.get("/api/dashboard/{period}/{category}")
+def dashboard_category(period: str, category: str) -> dict:
+    _validate_dashboard_path(period, r"\d{4}-\d{2}", "Periodo")
+    _validate_dashboard_path(category, r"[a-z0-9_]+", "Categoría")
+    try:
+        client = _dashboard_client()
+        category_ref = (
+            client.collection("periods")
+            .document(period)
+            .collection("categories")
+            .document(category)
+        )
+        metadata_snapshot = category_ref.get()
+        if not metadata_snapshot.exists:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No hay datos publicados para {category} en {period}.",
+            )
+        metadata = metadata_snapshot.to_dict() or {}
+        history_snapshot = (
+            client.collection("dashboard_categories").document(category).get()
+        )
+        history = history_snapshot.to_dict() if history_snapshot.exists else {}
+        metric_snapshots = sorted(
+            category_ref.collection("view_chunks")
+            .where("view", "==", "cube")
+            .stream(),
+            key=lambda item: int((item.to_dict() or {}).get("index", 0)),
+        )
+        metrics = [
+            row
+            for snapshot in metric_snapshots
+            for row in decode_tabular_payload(snapshot.to_dict() or {})
+        ]
+        return {
+            "category": category,
+            "label": str(metadata.get("category_label") or category),
+            "period": period,
+            "cutoffDate": str(metadata.get("cutoff_date") or ""),
+            "metrics": metrics,
+            "positions": metadata.get("positions") or [],
+            "regions": metadata.get("regions") or [],
+            "courses": metadata.get("courses") or [],
+            "pendingSections": metadata.get("pending_sections") or [],
+            "history": (history or {}).get("periods") or {},
+        }
+    except HTTPException:
+        raise
+    except Exception as error:
+        raise HTTPException(
+            status_code=502,
+            detail=f"No se pudo leer el reporte de Firebase: {error}",
+        ) from error
+
+
+@app.get("/api/dashboard/{period}/{category}/pending/{section_key}")
+def dashboard_pending(period: str, category: str, section_key: str) -> list[dict]:
+    _validate_dashboard_path(period, r"\d{4}-\d{2}", "Periodo")
+    _validate_dashboard_path(category, r"[a-z0-9_]+", "Categoría")
+    _validate_dashboard_path(section_key, r"[a-f0-9]{8}", "Sección")
+    try:
+        client = _dashboard_client()
+        category_ref = (
+            client.collection("periods")
+            .document(period)
+            .collection("categories")
+            .document(category)
+        )
+        snapshots = sorted(
+            category_ref.collection("pending_chunks")
+            .where("section_key", "==", section_key)
+            .stream(),
+            key=lambda item: int((item.to_dict() or {}).get("index", 0)),
+        )
+        rows = []
+        for snapshot in snapshots:
+            payload = snapshot.to_dict() or {}
+            rows.extend(
+                {
+                    **row,
+                    "region": str(payload.get("region") or ""),
+                    "puesto": str(payload.get("position") or ""),
+                }
+                for row in decode_tabular_payload(payload)
+            )
+        return rows
+    except HTTPException:
+        raise
+    except Exception as error:
+        raise HTTPException(
+            status_code=502,
+            detail=f"No se pudo leer el detalle de Firebase: {error}",
+        ) from error
+
+
+@app.get("/api/dashboard/{period}/{category}/pending")
+def dashboard_all_pending(period: str, category: str) -> list[dict]:
+    """Return every pending block with a single browser request."""
+    _validate_dashboard_path(period, r"\d{4}-\d{2}", "Periodo")
+    _validate_dashboard_path(category, r"[a-z0-9_]+", "Categoría")
+    try:
+        client = _dashboard_client()
+        category_ref = (
+            client.collection("periods")
+            .document(period)
+            .collection("categories")
+            .document(category)
+        )
+        snapshots = sorted(
+            category_ref.collection("pending_chunks").stream(),
+            key=lambda item: (
+                str((item.to_dict() or {}).get("section_key") or ""),
+                int((item.to_dict() or {}).get("index", 0)),
+            ),
+        )
+        rows = []
+        for snapshot in snapshots:
+            payload = snapshot.to_dict() or {}
+            rows.extend(
+                {
+                    **row,
+                    "region": str(payload.get("region") or ""),
+                    "puesto": str(payload.get("position") or ""),
+                }
+                for row in decode_tabular_payload(payload)
+            )
+        return rows
+    except HTTPException:
+        raise
+    except Exception as error:
+        raise HTTPException(
+            status_code=502,
+            detail=f"No se pudo leer el detalle de Firebase: {error}",
+        ) from error
+
+
 @app.get("/api/catalog")
 def catalog() -> dict:
     return catalog_payload((), ())
@@ -333,6 +520,8 @@ async def execute(
     rules_sql: str = Form(""),
     preview_table: str = Form(""),
     preview_limit: int = Form(100),
+    cutoff_date: str = Form(""),
+    publish_to_firebase: bool = Form(False),
 ) -> dict:
     if not isinstance(sql_filename, str):
         sql_filename = "consulta.sql"
@@ -342,13 +531,35 @@ async def execute(
         preview_table = ""
     if not isinstance(preview_limit, int):
         preview_limit = 100
+    if not isinstance(cutoff_date, str):
+        cutoff_date = ""
+    if not isinstance(publish_to_firebase, bool):
+        publish_to_firebase = False
     preview_table = preview_table.strip()
+    cutoff_date = cutoff_date.strip()
     preview_limit = max(1, min(preview_limit, 1_000))
     if preview_table and not re.fullmatch(r"[a-zA-Z_][a-zA-Z0-9_]*", preview_table):
         raise HTTPException(status_code=400, detail="El nombre de la tabla para preview no es válido.")
+    if publish_to_firebase and not cutoff_date:
+        raise HTTPException(
+            status_code=400,
+            detail="Usa start --d(AAAA-MM-DD) para indicar la fecha de corte.",
+        )
+    effective_sql = sql
+    if cutoff_date:
+        try:
+            validate_cutoff_date(cutoff_date)
+            effective_sql = apply_cutoff_date(sql, cutoff_date)
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+
     definitions, families = build_catalog(rules_sql, sql_filename)
-    statements = prepare_statements(sql, definitions, families)
-    exports = [] if preview_table else prepare_exports(sql)
+    statements = prepare_statements(effective_sql, definitions, families)
+    exports = (
+        []
+        if preview_table or publish_to_firebase
+        else prepare_exports(effective_sql)
+    )
     loaded: dict[
         str,
         tuple[str, str, list[tuple[str, pd.DataFrame]], str, str | None],
@@ -481,6 +692,27 @@ async def execute(
             records = cursor.fetchmany(preview_limit + 1)
             truncated = len(records) > preview_limit
             records = records[:preview_limit]
+        firebase_result = None
+        if publish_to_firebase:
+            category, category_label = category_from_filename(sql_filename)
+            try:
+                dataset = build_dashboard_dataset(
+                    connection,
+                    category,
+                    category_label,
+                    validate_cutoff_date(cutoff_date),
+                )
+                firebase_result = publish_dashboard(dataset)
+            except FirebaseConfigurationError as error:
+                raise HTTPException(status_code=503, detail=str(error)) from error
+            except ValueError as error:
+                raise HTTPException(status_code=400, detail=str(error)) from error
+            # RunSQL is the uploader, not the dashboard. Avoid returning and
+            # rendering the last validation SELECT after a monthly publication.
+            columns = []
+            records = []
+            truncated = False
+
         output_files = []
         for export_query, filename, sheet_name in exports:
             dataframe = connection.execute(export_query).fetchdf()
@@ -504,6 +736,7 @@ async def execute(
             "truncated": truncated,
             "loaded_files": loaded_files,
             "output_files": output_files,
+            "firebase_publish": firebase_result,
         }
     except duckdb.Error as error:
         raise HTTPException(status_code=400, detail=f"Error al ejecutar SQL: {error}") from error

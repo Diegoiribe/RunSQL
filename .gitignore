@@ -1,5 +1,7 @@
 .DS_Store
 .env
+firebase-service-account.json
+backend/firebase-service-account.json
 .venv/
 .venv-windows/
 .runtime-windows/

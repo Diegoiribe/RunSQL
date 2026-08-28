@@ -911,6 +911,32 @@ code {
   margin-bottom: 9px;
   color: #8e8e93;
 }
+
+.firebase-publish-status {
+  display: grid;
+  gap: 5px;
+  margin-bottom: 22px;
+  padding: 16px 18px;
+  border: 1px solid rgba(88, 166, 255, 0.24);
+  border-radius: 14px;
+  background: rgba(88, 166, 255, 0.08);
+}
+
+.firebase-publish-status span {
+  color: #58a6ff;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.firebase-publish-status strong {
+  color: #f5f5f7;
+}
+
+.firebase-publish-status small {
+  color: #a1a1a6;
+}
 .generated-outputs {
   margin-bottom: 16px;
   display: grid;

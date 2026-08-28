@@ -119,6 +119,76 @@ Para ejecutar las pruebas del backend:
 npm run test:backend
 ```
 
+## Publicar resultados en Firebase
+
+La ejecución mensual ya no necesita generar los Excel de salida. El comando:
+
+```text
+start --d(2026-07-30)
+```
+
+usa esa fecha como corte del SQL, ejecuta el proceso cargado y publica en Cloud
+Firestore. El nombre del SQL determina la categoría (`Asesor.sql` publica
+`asesor`, `Gerente Zona.sql` publica `gerente_zona`, etcétera).
+
+La configuración web de Firebase identifica el proyecto, pero no concede al
+backend permiso para escribir. Para publicar de forma segura:
+
+1. En Firebase Console abre **Configuración del proyecto > Cuentas de servicio**.
+2. Genera una clave privada nueva y guárdala fuera del repositorio.
+3. Copia `.env.example` como `.env`.
+4. Coloca en `FIREBASE_SERVICE_ACCOUNT` la ruta absoluta al JSON.
+
+Ejemplo de Windows:
+
+```dotenv
+FIREBASE_PROJECT_ID=capacitaciones-api
+FIREBASE_SERVICE_ACCOUNT=C:\Users\diego.iribe\Documents\firebase-service-account.json
+```
+
+La clave está excluida de Git. No debe pegarse en el frontend ni compartirse.
+
+### Estructura de datos
+
+```text
+periods/{AAAA-MM}
+└── categories/{categoria}
+    ├── resumen, catálogos de filtros y fecha de corte
+    ├── view_chunks/{seccion_fragmento}
+    │   ├── positions: resumen por puesto
+    │   ├── regions: ranking por región
+    │   ├── courses: avance por curso
+    │   ├── course_regions: avance de cada curso por región
+    │   └── cube: puesto + región + curso para combinar filtros
+    └── pending_chunks/{region_puesto_fragmento}
+        └── persona + nombre + puesto + región + tienda + curso pendiente
+
+dashboard_categories/{categoria}
+└── periods/{como mapa}: resumen histórico para la gráfica mensual
+```
+
+RunSQL solo carga, calcula y publica. La web de reportes lee la sección que está
+mostrando: no descarga colaboradores para pintar las gráficas y no consulta una
+fila por persona. Para combinar varios filtros carga el cubo agregado de cada
+categoría seleccionada. El detalle pendiente se solicita después, por región y
+puesto, y se filtra dentro de esos bloques por persona o curso. `pendientes` es
+`total - completados` y el porcentaje pendiente es `100 - porcentaje de avance`.
+Al ejecutar `start --d(...)`, RunSQL muestra únicamente el estado y las
+cantidades publicadas; no descarga ni renderiza nuevamente el resultado SQL.
+El comando `show` conserva su previsualización limitada para validaciones.
+
+Cada gráfica suele requerir solo el documento de resumen y uno o pocos bloques
+de su sección. Los registros se agrupan en fragmentos menores a 1 MiB para
+reducir escrituras, lecturas y transferencia. Volver a ejecutar la misma
+categoría y mes reemplaza sus bloques anteriores; nunca se guarda un documento
+de Firestore por cada fila del SQL.
+
+Dentro de cada bloque, `columns` contiene los nombres una sola vez y `rows`
+contiene arreglos de valores. En los bloques de pendientes, `region` y
+`position` también se guardan una sola vez en la cabecera. La web de reportes
+debe conservar estos bloques en caché mientras el usuario cambia filtros para no
+volver a facturar la misma lectura durante esa sesión.
+
 ## Estandarizar archivos
 
 El catálogo se genera automáticamente al cargar un SQL. El nombre del proceso sale del archivo SQL y las fuentes adicionales se detectan desde sus sentencias `read_xlsx`:

@@ -46,6 +46,16 @@ type ExecutionResult = {
     size: number;
     content_base64: string;
   }>;
+  firebase_publish: null | {
+    project_id: string;
+    period: string;
+    category: string;
+    metric_rows: number;
+    pending_rows: number;
+    view_documents: number;
+    detail_documents: number;
+    documents_written: number;
+  };
 };
 
 const API_URL = import.meta.env.VITE_API_URL ?? '';
@@ -144,11 +154,17 @@ export default function App() {
     y: number;
   } | null>(null);
   const [terminalCommand, setTerminalCommand] = useState('');
+  const [commandHistory, setCommandHistory] = useState<string[]>([]);
+  const [commandHistoryIndex, setCommandHistoryIndex] = useState<number | null>(
+    null
+  );
   const [terminalLines, setTerminalLines] = useState<string[]>([
     'Escribe help para ver los comandos disponibles.'
   ]);
   const [resultHistoryLength, setResultHistoryLength] = useState(0);
   const commandHighlightRef = useRef<HTMLPreElement>(null);
+  const commandInputRef = useRef<HTMLTextAreaElement>(null);
+  const commandDraftRef = useRef('');
   const sqlFileRef = useRef<HTMLInputElement>(null);
   const resourceFileRef = useRef<HTMLInputElement>(null);
   const unassignedSequence = useRef(0);
@@ -441,7 +457,8 @@ export default function App() {
 
   async function execute(
     statementOverride?: string,
-    preview?: { table: string; limit: number }
+    preview?: { table: string; limit: number },
+    publish?: { cutoffDate: string }
   ) {
     const statement = statementOverride ?? sql;
     const unassignedFiles = Object.entries(uploads)
@@ -491,6 +508,10 @@ export default function App() {
       body.append('preview_table', preview.table);
       body.append('preview_limit', String(preview.limit));
     }
+    if (publish) {
+      body.append('cutoff_date', publish.cutoffDate);
+      body.append('publish_to_firebase', 'true');
+    }
     Object.values(uploads).forEach((file) => body.append('files', file));
     try {
       const response = await fetch(`${API_URL}/api/execute`, {
@@ -502,7 +523,9 @@ export default function App() {
         throw new Error(payload.detail ?? 'No se pudo ejecutar la consulta.');
       setResult(payload);
       const duration = Date.now() - startedAt;
-      const outputMessage = payload.output_files?.length
+      const outputMessage = payload.firebase_publish
+        ? `Firebase actualizado: ${payload.firebase_publish.metric_rows.toLocaleString()} indicadores agregados y ${payload.firebase_publish.pending_rows.toLocaleString()} pendientes indexados`
+        : payload.output_files?.length
         ? `${payload.output_files.length} archivo(s) Excel generado(s)`
         : `${payload.row_count.toLocaleString()} filas obtenidas`;
       setTerminalLines((lines) => {
@@ -590,6 +613,11 @@ export default function App() {
     const rawCommand = terminalCommand.trim();
     const command = rawCommand.toLowerCase();
     if (!rawCommand) return;
+    setCommandHistory((history) =>
+      history.at(-1) === rawCommand ? history : [...history, rawCommand]
+    );
+    setCommandHistoryIndex(null);
+    commandDraftRef.current = '';
     setTerminalCommand('');
 
     if (command === 'clear') {
@@ -602,7 +630,17 @@ export default function App() {
     setTerminalLines((lines) => [...lines, `runsql % ${rawCommand}`]);
     if (command === 'upload') {
       sqlFileRef.current?.click();
-    } else if (command === 'start') {
+    } else if (/^start\b/i.test(rawCommand)) {
+      const startMatch = rawCommand.match(
+        /^start\s+--d\((\d{4}-\d{2}-\d{2})\)$/i
+      );
+      if (!startMatch) {
+        setTerminalLines((lines) => [
+          ...lines,
+          'error: usa start --d(AAAA-MM-DD); ejemplo: start --d(2026-07-30)'
+        ]);
+        return;
+      }
       if (!catalog)
         setTerminalLines((lines) => [
           ...lines,
@@ -613,17 +651,18 @@ export default function App() {
           ...lines,
           'la consulta ya se está ejecutando'
         ]);
-      else void execute();
+      else void execute(undefined, undefined, { cutoffDate: startMatch[1] });
     } else if (command === 'help') {
       setTerminalLines((lines) => [
         ...lines,
         'upload                    abrir un archivo SQL',
-        'start                     ejecutar el SQL cargado',
+        'start --d(AAAA-MM-DD)     ejecutar y publicar el corte en Firebase',
         'show tables               listar tablas generadas',
         'show <tabla> limit <x>     previsualizar y ordenar una tabla',
         'SELECT / WITH              ejecutar una consulta',
         'download                   descargar el resultado',
         'clear                      limpiar la terminal',
+        '↑ / ↓                      recorrer comandos anteriores',
         'help                       mostrar esta ayuda'
       ]);
     } else if (command === 'show tables') {
@@ -1019,6 +1058,25 @@ export default function App() {
 
                 {result && (
                   <div className="terminal-result">
+                    {result.firebase_publish && (
+                      <div className="firebase-publish-status">
+                        <span>Firebase actualizado</span>
+                        <strong>
+                          {result.firebase_publish.category} ·{' '}
+                          {result.firebase_publish.period}
+                        </strong>
+                        <small>
+                          {result.firebase_publish.view_documents.toLocaleString()}{' '}
+                          secciones ·{' '}
+                          {result.firebase_publish.pending_rows.toLocaleString()}{' '}
+                          pendientes en{' '}
+                          {result.firebase_publish.detail_documents.toLocaleString()}{' '}
+                          bloques ·{' '}
+                          {result.firebase_publish.documents_written.toLocaleString()}{' '}
+                          documentos
+                        </small>
+                      </div>
+                    )}
                     {result.output_files?.length > 0 && (
                       <div className="generated-outputs">
                         <div className="generated-outputs-heading">
@@ -1128,10 +1186,14 @@ export default function App() {
                       <br />
                     </pre>
                     <textarea
+                      ref={commandInputRef}
                       value={terminalCommand}
-                      onChange={(event) =>
-                        setTerminalCommand(event.target.value)
-                      }
+                      onChange={(event) => {
+                        const value = event.target.value;
+                        setTerminalCommand(value);
+                        setCommandHistoryIndex(null);
+                        commandDraftRef.current = value;
+                      }}
                       onScroll={(event) => {
                         if (!commandHighlightRef.current) return;
                         commandHighlightRef.current.scrollTop =
@@ -1140,6 +1202,68 @@ export default function App() {
                           event.currentTarget.scrollLeft;
                       }}
                       onKeyDown={(event) => {
+                        const input = event.currentTarget;
+                        const cursorStart = input.selectionStart;
+                        const cursorEnd = input.selectionEnd;
+                        const cursorOnFirstLine = !terminalCommand
+                          .slice(0, cursorStart)
+                          .includes('\n');
+                        const cursorOnLastLine = !terminalCommand
+                          .slice(cursorEnd)
+                          .includes('\n');
+
+                        if (
+                          event.key === 'ArrowUp' &&
+                          cursorOnFirstLine &&
+                          commandHistory.length
+                        ) {
+                          event.preventDefault();
+                          if (commandHistoryIndex === null)
+                            commandDraftRef.current = terminalCommand;
+                          const nextIndex =
+                            commandHistoryIndex === null
+                              ? commandHistory.length - 1
+                              : Math.max(0, commandHistoryIndex - 1);
+                          const previousCommand = commandHistory[nextIndex];
+                          setCommandHistoryIndex(nextIndex);
+                          setTerminalCommand(previousCommand);
+                          window.requestAnimationFrame(() => {
+                            const target = commandInputRef.current;
+                            target?.setSelectionRange(
+                              previousCommand.length,
+                              previousCommand.length
+                            );
+                          });
+                          return;
+                        }
+
+                        if (
+                          event.key === 'ArrowDown' &&
+                          cursorOnLastLine &&
+                          commandHistoryIndex !== null
+                        ) {
+                          event.preventDefault();
+                          const nextIndex = commandHistoryIndex + 1;
+                          const nextCommand =
+                            nextIndex >= commandHistory.length
+                              ? commandDraftRef.current
+                              : commandHistory[nextIndex];
+                          setCommandHistoryIndex(
+                            nextIndex >= commandHistory.length
+                              ? null
+                              : nextIndex
+                          );
+                          setTerminalCommand(nextCommand);
+                          window.requestAnimationFrame(() => {
+                            const target = commandInputRef.current;
+                            target?.setSelectionRange(
+                              nextCommand.length,
+                              nextCommand.length
+                            );
+                          });
+                          return;
+                        }
+
                         if (event.key === 'Enter' && !event.shiftKey) {
                           event.preventDefault();
                           runTerminalCommand();

@@ -255,7 +255,10 @@ function backendImportStatus() {
   try {
     run(
       virtualPython,
-      ['-c', 'import fastapi, uvicorn, multipart, duckdb, pandas, openpyxl'],
+      [
+        '-c',
+        'import fastapi, uvicorn, multipart, duckdb, pandas, openpyxl, firebase_admin'
+      ],
       { capture: true }
     );
     return { ok: true, detail: '' };

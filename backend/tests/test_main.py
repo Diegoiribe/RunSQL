@@ -1,10 +1,19 @@
 import io
 import unittest
+from datetime import date
+from unittest.mock import patch
 
+import duckdb
 from fastapi import HTTPException
 from starlette.datastructures import UploadFile
 
 from app.catalog import build_catalog, definition_targets
+from app.firebase_publish import (
+    _tabular_payload,
+    apply_cutoff_date,
+    build_dashboard_dataset,
+    decode_tabular_payload,
+)
 from app.main import execute, match_definition, match_family, prepare_exports, prepare_statements, split_sql_script, validate_sql
 
 RULES_SQL = """
@@ -39,6 +48,25 @@ class RunSqlTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(match_definition("7 Datos Tiendas Julio 2026.xlsx").key, "datos_tiendas_almacenista")
         self.assertEqual(match_definition("Bodeguita _ Detalle Colaborador (10).xlsx").key, "almacenista_detalle")
         self.assertIsNone(match_definition("archivo desconocido.xlsx"))
+
+    def test_firestore_tabular_payload_does_not_nest_arrays(self):
+        payload = _tabular_payload(
+            [
+                {"persona": 1, "curso": "SQL"},
+                {"persona": 2, "curso": "Excel"},
+            ]
+        )
+        self.assertEqual(payload["columns"], ["persona", "curso"])
+        self.assertEqual(payload["row_count"], 2)
+        self.assertEqual(payload["values"], [1, "SQL", 2, "Excel"])
+        self.assertNotIn("rows", payload)
+        self.assertEqual(
+            decode_tabular_payload(payload),
+            [
+                {"persona": 1, "curso": "SQL"},
+                {"persona": 2, "curso": "Excel"},
+            ],
+        )
 
     def test_dynamic_rules_ignore_case_and_accents(self):
         definitions, families = build_catalog(RULES_SQL, "ALMACÉNISTA.sql")
@@ -152,6 +180,58 @@ class RunSqlTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(exports), 1)
         self.assertEqual(exports[0][1], "salida.xlsx")
 
+    def test_cutoff_date_replaces_parameter_and_validation_date(self):
+        sql = """
+        CREATE OR REPLACE TABLE parametros_asesor AS
+        SELECT DATE '2026-07-30' AS fecha_corte;
+        SELECT * FROM parametros_asesor
+        WHERE fecha_corte <> DATE '2026-07-30';
+        """
+        updated = apply_cutoff_date(sql, "2026-08-31")
+        self.assertNotIn("2026-07-30", updated)
+        self.assertEqual(updated.count("2026-08-31"), 2)
+
+    def test_dashboard_dataset_supports_filters_and_pending_detail(self):
+        connection = duckdb.connect(":memory:")
+        try:
+            connection.execute(
+                """
+                CREATE TABLE resultados_capacitacion_asesor AS
+                SELECT * FROM (VALUES
+                    (1, 'Ana', 'Gerente Ventas', '1', 'Curso A', 'No', 1, 1, '10'),
+                    (2, 'Luis', 'Gerente Muebles', '2', 'Curso A', 'No', 0, 1, '20'),
+                    (2, 'Luis', 'Gerente Muebles', '2', 'Curso B', 'No', 0, 1, '20'),
+                    (3, 'Eva', 'Gerente Ventas', '1', 'Iniciativa', 'Si', 0, 1, '30')
+                ) AS source(
+                    numero_persona, nombre, nombre_puesto, region, curso,
+                    iniciativa, completados, total, tienda
+                )
+                """
+            )
+            dataset = build_dashboard_dataset(
+                connection,
+                "asesor",
+                "Asesor",
+                date(2026, 7, 30),
+            )
+        finally:
+            connection.close()
+        self.assertEqual(dataset["period"], "2026-07")
+        self.assertEqual(dataset["total"], 3)
+        self.assertEqual(dataset["completed"], 1)
+        self.assertEqual(dataset["pending"], 2)
+        self.assertEqual(dataset["progress_percentage"], 33.33)
+        self.assertEqual(len(dataset["pending_rows"]), 2)
+        self.assertEqual(
+            dataset["positions"], ["Gerente Muebles", "Gerente Ventas"]
+        )
+        self.assertEqual(len(dataset["views"]["positions"]), 2)
+        self.assertEqual(
+            sum(row["total"] for row in dataset["views"]["regions"]), 3
+        )
+        self.assertEqual(dataset["views"]["regions"][1]["pendientes"], 2)
+        self.assertEqual(dataset["views"]["courses"][0]["avance"], 50.0)
+
     async def test_execute_returns_xlsx_exports(self):
         files = [
             UploadFile(io.BytesIO(b"persona,curso\n1,SQL\n"), filename="Almacenista P1.csv"),
@@ -171,6 +251,53 @@ class RunSqlTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["output_files"][0]["filename"], "Reporte Almacenista.xlsx")
         self.assertEqual(result["output_files"][0]["rows"], 1)
         self.assertTrue(result["output_files"][0]["content_base64"].startswith("UEs"))
+
+    async def test_start_date_publishes_dashboard_instead_of_excel(self):
+        files = [
+            UploadFile(io.BytesIO(b"persona,curso\n1,SQL\n"), filename="Almacenista P1.csv"),
+            *self.required_files(),
+        ]
+        sql = """
+        CREATE OR REPLACE TABLE parametros_almacenista AS
+        SELECT DATE '2026-07-30' AS fecha_corte;
+        CREATE OR REPLACE TABLE resultados_capacitacion_almacenista AS
+        SELECT
+            1 AS numero_persona, 'Ana' AS nombre,
+            'Almacenista' AS nombre_puesto, '1' AS region,
+            'Curso A' AS curso, 'No' AS iniciativa,
+            0 AS completados, 1 AS total, '10' AS tienda;
+        SELECT fecha_corte FROM parametros_almacenista;
+        COPY (SELECT * FROM resultados_capacitacion_almacenista)
+        TO '/equipo/resultado.xlsx';
+        """
+        publication = {
+            "project_id": "capacitaciones-api",
+            "period": "2026-08",
+            "category": "almacenista",
+            "metric_rows": 1,
+            "pending_rows": 1,
+            "view_documents": 5,
+            "detail_documents": 1,
+            "documents_written": 4,
+        }
+        with patch("app.main.publish_dashboard", return_value=publication) as publish:
+            result = await execute(
+                sql,
+                files,
+                "Almacenista.sql",
+                RULES_SQL,
+                "",
+                100,
+                "2026-08-31",
+                True,
+            )
+        dataset = publish.call_args.args[0]
+        self.assertEqual(dataset["cutoff_date"], "2026-08-31")
+        self.assertEqual(dataset["pending"], 1)
+        self.assertEqual(result["output_files"], [])
+        self.assertEqual(result["rows"], [])
+        self.assertEqual(result["columns"], [])
+        self.assertEqual(result["firebase_publish"], publication)
 
     async def test_preview_generated_table(self):
         files = [
