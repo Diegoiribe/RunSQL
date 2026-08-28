@@ -50,6 +50,10 @@ type ExecutionResult = {
     project_id: string;
     period: string;
     category: string;
+    cutoff_date: string;
+    replaced_existing: boolean;
+    same_cutoff_replacement: boolean;
+    publication_revision: number;
     metric_rows: number;
     pending_rows: number;
     view_documents: number;
@@ -524,7 +528,7 @@ export default function App() {
       setResult(payload);
       const duration = Date.now() - startedAt;
       const outputMessage = payload.firebase_publish
-        ? `Firebase actualizado: ${payload.firebase_publish.metric_rows.toLocaleString()} indicadores agregados y ${payload.firebase_publish.pending_rows.toLocaleString()} pendientes indexados`
+        ? `${payload.firebase_publish.replaced_existing ? 'Corte reemplazado' : 'Corte publicado'}: ${payload.firebase_publish.metric_rows.toLocaleString()} indicadores y ${payload.firebase_publish.pending_rows.toLocaleString()} pendientes indexados`
         : payload.output_files?.length
         ? `${payload.output_files.length} archivo(s) Excel generado(s)`
         : `${payload.row_count.toLocaleString()} filas obtenidas`;
@@ -1060,12 +1064,17 @@ export default function App() {
                   <div className="terminal-result">
                     {result.firebase_publish && (
                       <div className="firebase-publish-status">
-                        <span>Firebase actualizado</span>
+                        <span>
+                          {result.firebase_publish.replaced_existing
+                            ? 'Corte reemplazado'
+                            : 'Firebase actualizado'}
+                        </span>
                         <strong>
                           {result.firebase_publish.category} ·{' '}
-                          {result.firebase_publish.period}
+                          {result.firebase_publish.cutoff_date}
                         </strong>
                         <small>
+                          revisión {result.firebase_publish.publication_revision} ·{' '}
                           {result.firebase_publish.view_documents.toLocaleString()}{' '}
                           secciones ·{' '}
                           {result.firebase_publish.pending_rows.toLocaleString()}{' '}

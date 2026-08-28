@@ -354,6 +354,18 @@ def _publish_dashboard(dataset: dict) -> dict:
     client = _firebase_client()
     period_ref = client.collection("periods").document(dataset["period"])
     category_ref = period_ref.collection("categories").document(dataset["category"])
+    existing_snapshot = category_ref.get()
+    existing_metadata = (
+        existing_snapshot.to_dict() or {}
+        if getattr(existing_snapshot, "exists", False)
+        else {}
+    )
+    replaced_existing = bool(existing_metadata)
+    same_cutoff_replacement = (
+        replaced_existing
+        and existing_metadata.get("cutoff_date") == dataset["cutoff_date"]
+    )
+    publication_revision = int(existing_metadata.get("publication_revision") or 0) + 1
     views_collection = category_ref.collection("view_chunks")
     pending_collection = category_ref.collection("pending_chunks")
 
@@ -468,6 +480,8 @@ def _publish_dashboard(dataset: dict) -> dict:
             "pending_chunks": len(pending_chunks),
             "pending_sections": pending_sections,
             "schema_version": 3,
+            "publication_revision": publication_revision,
+            "publication_action": "replaced" if replaced_existing else "created",
             "updated_at": datetime.now(timezone.utc),
         }
     )
@@ -508,6 +522,10 @@ def _publish_dashboard(dataset: dict) -> dict:
         "project_id": FIREBASE_PROJECT_ID,
         "period": dataset["period"],
         "category": dataset["category"],
+        "cutoff_date": dataset["cutoff_date"],
+        "replaced_existing": replaced_existing,
+        "same_cutoff_replacement": same_cutoff_replacement,
+        "publication_revision": publication_revision,
         "metric_rows": len(dataset["metrics"]),
         "pending_rows": len(dataset["pending_rows"]),
         "view_documents": sum(view_counts.values()),

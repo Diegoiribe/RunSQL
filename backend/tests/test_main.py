@@ -9,6 +9,7 @@ from starlette.datastructures import UploadFile
 
 from app.catalog import build_catalog, definition_targets
 from app.firebase_publish import (
+    _publish_dashboard,
     _tabular_payload,
     apply_cutoff_date,
     build_dashboard_dataset,
@@ -26,6 +27,86 @@ CREATE OR REPLACE TABLE plan_capacitacion_almacenista AS
 SELECT * FROM read_xlsx('/fuentes/Plan de Capacitacion Almacenista.xlsx', sheet = 'Hoja1');
 SELECT * FROM almacenista_p;
 """
+
+
+class FakeSnapshot:
+    def __init__(self, reference, data=None):
+        self.reference = reference
+        self.id = reference.path[-1]
+        self._data = data
+        self.exists = data is not None
+
+    def to_dict(self):
+        return dict(self._data) if self._data is not None else None
+
+
+class FakeDocument:
+    def __init__(self, client, path):
+        self.client = client
+        self.path = path
+
+    def collection(self, name):
+        return FakeCollection(self.client, self.path + (name,))
+
+    def get(self):
+        return FakeSnapshot(self, self.client.documents.get(self.path))
+
+    def set(self, payload, merge=False):
+        if merge and self.path in self.client.documents:
+            self.client.documents[self.path] = {
+                **self.client.documents[self.path],
+                **payload,
+            }
+        else:
+            self.client.documents[self.path] = dict(payload)
+
+    def delete(self):
+        self.client.documents.pop(self.path, None)
+
+
+class FakeCollection:
+    def __init__(self, client, path):
+        self.client = client
+        self.path = path
+
+    def document(self, name):
+        return FakeDocument(self.client, self.path + (name,))
+
+    def stream(self):
+        return [
+            FakeSnapshot(FakeDocument(self.client, path), payload)
+            for path, payload in sorted(self.client.documents.items())
+            if len(path) == len(self.path) + 1 and path[:-1] == self.path
+        ]
+
+
+class FakeBatch:
+    def __init__(self):
+        self.operations = []
+
+    def set(self, reference, payload):
+        self.operations.append(("set", reference, payload))
+
+    def delete(self, reference):
+        self.operations.append(("delete", reference, None))
+
+    def commit(self):
+        for action, reference, payload in self.operations:
+            if action == "set":
+                reference.set(payload)
+            else:
+                reference.delete()
+
+
+class FakeFirestore:
+    def __init__(self):
+        self.documents = {}
+
+    def collection(self, name):
+        return FakeCollection(self, (name,))
+
+    def batch(self):
+        return FakeBatch()
 
 
 class RunSqlTests(unittest.IsolatedAsyncioTestCase):
@@ -231,6 +312,98 @@ class RunSqlTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(dataset["views"]["regions"][1]["pendientes"], 2)
         self.assertEqual(dataset["views"]["courses"][0]["avance"], 50.0)
+
+    def test_same_category_and_cutoff_replaces_previous_publication(self):
+        client = FakeFirestore()
+        first = {
+            "period": "2026-07",
+            "category": "almacenista",
+            "category_label": "Almacenista",
+            "cutoff_date": "2026-07-30",
+            "year": 2026,
+            "month": 7,
+            "total": 2,
+            "completed": 1,
+            "pending": 1,
+            "progress_percentage": 50.0,
+            "pending_percentage": 50.0,
+            "positions": ["Almacenista"],
+            "regions": ["Norte"],
+            "courses": ["Curso A"],
+            "metrics": [
+                {
+                    "puesto": "Almacenista",
+                    "region": "Norte",
+                    "curso": "Curso A",
+                    "total": 2,
+                    "completados": 1,
+                    "pendientes": 1,
+                    "avance": 50.0,
+                }
+            ],
+            "views": {
+                "positions": [],
+                "regions": [],
+                "courses": [],
+                "course_regions": [],
+            },
+            "pending_rows": [
+                {
+                    "numero_persona": "1",
+                    "nombre": "Ana",
+                    "puesto": "Almacenista",
+                    "region": "Norte",
+                    "tienda": "10",
+                    "curso": "Curso A",
+                }
+            ],
+        }
+        updated = {
+            **first,
+            "total": 3,
+            "completed": 3,
+            "pending": 0,
+            "progress_percentage": 100.0,
+            "pending_percentage": 0.0,
+            "metrics": [
+                {
+                    **first["metrics"][0],
+                    "total": 3,
+                    "completados": 3,
+                    "pendientes": 0,
+                    "avance": 100.0,
+                }
+            ],
+            "pending_rows": [],
+        }
+
+        with patch("app.firebase_publish._firebase_client", return_value=client):
+            created = _publish_dashboard(first)
+            replaced = _publish_dashboard(updated)
+
+        self.assertFalse(created["replaced_existing"])
+        self.assertEqual(created["publication_revision"], 1)
+        self.assertTrue(replaced["replaced_existing"])
+        self.assertTrue(replaced["same_cutoff_replacement"])
+        self.assertEqual(replaced["publication_revision"], 2)
+
+        category = (
+            client.collection("periods")
+            .document("2026-07")
+            .collection("categories")
+            .document("almacenista")
+        )
+        metadata = category.get().to_dict()
+        self.assertEqual(metadata["total"], 3)
+        self.assertEqual(metadata["pending"], 0)
+        self.assertEqual(metadata["publication_action"], "replaced")
+        self.assertEqual(metadata["publication_revision"], 2)
+        self.assertEqual(list(category.collection("pending_chunks").stream()), [])
+
+        cube = category.collection("view_chunks").document("cube_00000").get()
+        rows = decode_tabular_payload(cube.to_dict())
+        self.assertEqual(rows[0]["total"], 3)
+        self.assertEqual(rows[0]["completados"], 3)
 
     async def test_execute_returns_xlsx_exports(self):
         files = [
