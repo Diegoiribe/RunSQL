@@ -7,12 +7,14 @@ import unicodedata
 from hashlib import sha1
 from datetime import date, datetime, timezone
 from pathlib import Path
+from threading import Lock
 from typing import Iterable, Iterator
 
 import duckdb
 import pandas as pd
 
 FIREBASE_PROJECT_ID = os.getenv("FIREBASE_PROJECT_ID", "capacitaciones-api")
+_FIREBASE_APP_LOCK = Lock()
 CHUNK_TARGET_BYTES = 600_000
 # A Firestore commit is also limited by request size. With documents chunked at
 # ~600 KB, ten writes keep the batch comfortably below that ceiling.
@@ -297,24 +299,25 @@ def _firebase_client():
         import firebase_admin
         from firebase_admin import credentials, firestore
 
-        try:
-            firebase_app = firebase_admin.get_app("runsql")
-        except ValueError:
-            if credential_value.startswith("{"):
-                credential_data = json.loads(credential_value)
-                credential = credentials.Certificate(credential_data)
-            else:
-                credential_path = Path(credential_value).expanduser().resolve()
-                if not credential_path.is_file():
-                    raise FirebaseConfigurationError(
-                        f"No existe la cuenta de servicio: {credential_path}"
-                    )
-                credential = credentials.Certificate(str(credential_path))
-            firebase_app = firebase_admin.initialize_app(
-                credential,
-                {"projectId": FIREBASE_PROJECT_ID},
-                name="runsql",
-            )
+        with _FIREBASE_APP_LOCK:
+            try:
+                firebase_app = firebase_admin.get_app("runsql")
+            except ValueError:
+                if credential_value.startswith("{"):
+                    credential_data = json.loads(credential_value)
+                    credential = credentials.Certificate(credential_data)
+                else:
+                    credential_path = Path(credential_value).expanduser().resolve()
+                    if not credential_path.is_file():
+                        raise FirebaseConfigurationError(
+                            f"No existe la cuenta de servicio: {credential_path}"
+                        )
+                    credential = credentials.Certificate(str(credential_path))
+                firebase_app = firebase_admin.initialize_app(
+                    credential,
+                    {"projectId": FIREBASE_PROJECT_ID},
+                    name="runsql",
+                )
         return firestore.client(app=firebase_app)
     except FirebaseConfigurationError:
         raise
