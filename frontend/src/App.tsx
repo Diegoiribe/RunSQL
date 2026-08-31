@@ -81,6 +81,12 @@ function fileStem(filename: string) {
   return filename.replace(/\.[^.]+$/, '');
 }
 
+function familyPeriodDisplayName(family: CatalogFamily, period: string) {
+  const processName = family.name.replace(/\s+p\(x\)$/i, '');
+  const prefix = normalize(processName).replace(/\s+/g, '_');
+  return `${prefix}_p${period}`;
+}
+
 function csvCell(value: unknown) {
   const text = value === null || value === undefined ? '' : String(value);
   return `"${text.replaceAll('"', '""')}"`;
@@ -598,7 +604,7 @@ export default function App() {
       file,
       tableName:
         family && period
-          ? `${family.table_name}${period}`
+          ? familyPeriodDisplayName(family, period)
           : definition?.table_name ?? 'archivo',
       description: '',
       assigned: Boolean(family || definition)

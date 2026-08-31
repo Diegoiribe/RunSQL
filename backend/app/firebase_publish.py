@@ -20,6 +20,12 @@ CHUNK_TARGET_BYTES = 600_000
 # ~600 KB, ten writes keep the batch comfortably below that ceiling.
 MAX_BATCH_OPERATIONS = 10
 
+# Excepciones históricas explícitas. La categoría pública continúa siendo la
+# clave del archivo SQL, aunque el proceso conserve otro sufijo internamente.
+RESULT_TABLE_ALIASES = {
+    "gerente_zona": ("resultados_capacitacion_gerente",),
+}
+
 
 class FirebaseConfigurationError(RuntimeError):
     pass
@@ -35,7 +41,10 @@ def slugify(value: str) -> str:
 
 def category_from_filename(filename: str) -> tuple[str, str]:
     label = re.sub(r"\s+ejemplo$", "", Path(filename).stem, flags=re.IGNORECASE).strip()
-    return slugify(label), label
+    category = slugify(label)
+    if category == "encuesta_de_satisfaccion":
+        label = "Encuesta de satisfacción"
+    return category, label
 
 
 def validate_cutoff_date(value: str) -> date:
@@ -83,6 +92,9 @@ def result_table_name(connection: duckdb.DuckDBPyConnection, category: str) -> s
     }
     if expected in names:
         return expected
+    for alias in RESULT_TABLE_ALIASES.get(category, ()):
+        if alias in names:
+            return alias
     candidates = sorted(
         name
         for name in names
@@ -203,6 +215,105 @@ def _summarize_metrics(rows: Iterable[dict], dimensions: tuple[str, ...]) -> lis
     return sorted(result, key=lambda item: tuple(str(item[key]) for key in dimensions))
 
 
+COMMENT_THEMES = (
+    ("Explicación clara", ("clar", "explica", "comprend", "comunic")),
+    ("Curso valioso", ("excelente", "buen curso", "recom", "interesante", "util")),
+    ("Dominio del tema", ("dominio", "conocimiento", "preparad", "experiencia")),
+    ("Dinámica y participación", ("dinamic", "interactiv", "particip", "actividad", "practic")),
+    ("Atención y dudas", ("duda", "atencion", "apoyo", "disponib", "amable")),
+    ("Equipo y materiales", ("equipo", "material", "herramient", "instalacion", "computadora")),
+    ("Duración y ritmo", ("tiempo", "duracion", "rapido", "lento", "ritmo")),
+    ("Modalidad", ("presencial", "virtual", "linea", "remoto")),
+)
+POSITIVE_COMMENT_WORDS = (
+    "excelente", "bueno", "muy bien", "claro", "dinamic", "practic", "agradable",
+    "gracias", "recomiendo", "felicidades", "aprendi", "util", "ameno",
+    "amena", "participativo", "participativa", "gran talento", "ideal",
+    "conocedor", "dominio", "atento", "atenta", "entusiasmad", "me agrado",
+    "mejor forma", "agradec", "buen ", "carisma", "inspira", "confianza",
+)
+NEGATIVE_COMMENT_PATTERNS = (
+    r"\bfalta(?:n|ba)?\b", r"\bhace falta\b",
+    r"\bdeb(?:e|en|eria|erian) (?:mejorar|tener|agregar|incluir|cambiar)\b",
+    r"\bse deb(?:e|eria) (?:mejorar|agregar|incluir|cambiar)\b",
+    r"\bnecesita(?:n|mos)?\b", r"\bno funciona(?:n)?\b", r"\bmal estado\b",
+    r"\bproblema(?:s)?\b", r"\bdeficiente\b", r"\bconfus[oa]\b",
+    r"\b(?:demasiado|excesivamente) (?:rapido|lento)\b",
+    r"\b(?:explica|habla|avanza|va|ritmo) muy (?:rapido|lento)\b",
+    r"\bpoco tiempo\b", r"\bmas practica\b",
+    r"\bpuede(?:n)? mejorar\b", r"\bpodria(?:n)? mejorar\b", r"\bmas equipos?\b",
+    r"\bmejorar (?:el|la|los|las) (?:equipo|equipos|material|materiales|instalacion|instalaciones|contenido|curso|audio|computadora|computadoras)\b",
+    r"\bno (?:fue|es|esta|estuvo|me parecio )?(?:bueno|claro|util|dinamic[oa]|practic[oa]|ameno|amena)\b",
+    r"\bno (?:explica|comunica|funciona|ayuda|resuelve|cumple)\b",
+    r"\bnunca (?:explica|comunica|resuelve|contesta|ayuda)\b",
+    r"\bdificil de (?:entender|seguir|comprender)\b",
+)
+
+
+def _comment_key(value: str) -> str:
+    normalized = unicodedata.normalize("NFKD", value)
+    normalized = "".join(character for character in normalized if not unicodedata.combining(character))
+    return re.sub(r"\s+", " ", normalized.lower()).strip()
+
+
+def _comment_labels(value: str) -> tuple[str, str]:
+    normalized = _comment_key(value)
+    theme = next(
+        (label for label, words in COMMENT_THEMES if any(word in normalized for word in words)),
+        "Comentario general",
+    )
+    positive_score = sum(word in normalized for word in POSITIVE_COMMENT_WORDS)
+    negative_score = sum(bool(re.search(pattern, normalized)) for pattern in NEGATIVE_COMMENT_PATTERNS)
+    if negative_score:
+        sentiment = "negative"
+    elif positive_score:
+        sentiment = "positive"
+    else:
+        sentiment = "neutral"
+    if theme == "Comentario general" and sentiment == "negative":
+        theme = "Mejora general"
+    elif theme == "Comentario general" and sentiment == "positive":
+        theme = "Valoración positiva"
+    return theme, sentiment
+
+
+def _build_comment_details(rows: list[dict]) -> list[dict]:
+    aggregates: dict[tuple, dict] = {}
+    recent: list[dict] = []
+    for row in rows:
+        comment = str(row.get("comentario") or "").strip()
+        theme, sentiment = _comment_labels(comment)
+        month = str(row.get("fecha") or "")[:7]
+        dimensions = (
+            month, row["programa"], row["curso"], row["instructor"],
+            row["region"], sentiment, theme,
+        )
+        item = aggregates.setdefault(
+            dimensions,
+            {
+                "record_type": "theme", "fecha": None, "mes": month,
+                "programa": row["programa"], "curso": row["curso"],
+                "instructor": row["instructor"], "region": row["region"],
+                "recomendacion": None, "sentiment": sentiment, "theme": theme,
+                "count": 0, "comentario": None, "example": comment,
+            },
+        )
+        item["count"] += 1
+        if len(recent) < 1500:
+            recent.append(
+                {
+                    "record_type": "comment", "fecha": row["fecha"], "mes": month,
+                    "programa": row["programa"], "curso": row["curso"],
+                    "instructor": row["instructor"], "region": row["region"],
+                    "recomendacion": row["recomendacion"], "sentiment": sentiment,
+                    "theme": theme, "count": 1, "comentario": comment,
+                    "example": comment,
+                }
+            )
+    themes = sorted(aggregates.values(), key=lambda item: (-item["count"], item["theme"]))
+    return themes + recent
+
+
 def build_dashboard_dataset(
     connection: duckdb.DuckDBPyConnection,
     category: str,
@@ -258,6 +369,7 @@ def build_dashboard_dataset(
     progress = round(100.0 * completed / total, 2) if total else 0.0
     period = cutoff.strftime("%Y-%m")
     return {
+        "data_kind": "training",
         "period": period,
         "category": category,
         "category_label": category_label,
@@ -280,6 +392,114 @@ def build_dashboard_dataset(
             "course_regions": _summarize_metrics(metrics, ("curso", "region")),
         },
         "pending_rows": pending,
+    }
+
+
+def build_satisfaction_dashboard_dataset(
+    connection: duckdb.DuckDBPyConnection,
+    category: str,
+    category_label: str,
+    cutoff: date,
+) -> dict:
+    """Aggregate the canonical satisfaction table into a compact dashboard cube."""
+    names = {
+        row[0]
+        for row in connection.execute(
+            "SELECT table_name FROM information_schema.tables WHERE table_schema = 'main'"
+        ).fetchall()
+    }
+    specific_table = f"resultados_satisfaccion_{category}"
+    table = specific_table if specific_table in names else "resultados_satisfaccion"
+    if table not in names:
+        raise ValueError(
+            "No se encontró resultados_satisfaccion. El SQL debe generar la tabla canónica de encuestas."
+        )
+    quoted_table = table.replace('"', '""')
+    cutoff_text = cutoff.isoformat()
+    metrics = list(
+        _records(
+            connection.execute(
+                f"""
+                SELECT
+                    STRFTIME(fecha, '%Y-%m') AS mes,
+                    COALESCE(NULLIF(TRIM(CAST(programa AS VARCHAR)), ''), 'Sin programa') AS programa,
+                    COALESCE(NULLIF(TRIM(CAST(curso AS VARCHAR)), ''), 'Sin curso') AS curso,
+                    COALESCE(NULLIF(TRIM(CAST(instructor AS VARCHAR)), ''), 'Sin instructor') AS instructor,
+                    COALESCE(NULLIF(TRIM(CAST(region AS VARCHAR)), ''), 'Sin región') AS region,
+                    COUNT(*)::BIGINT AS respuestas,
+                    SUM(CASE WHEN dominio BETWEEN 1 AND 5 THEN dominio ELSE 0 END)::DOUBLE AS dominio_suma,
+                    COUNT(CASE WHEN dominio BETWEEN 1 AND 5 THEN 1 END)::BIGINT AS dominio_n,
+                    SUM(CASE WHEN comunicacion BETWEEN 1 AND 5 THEN comunicacion ELSE 0 END)::DOUBLE AS comunicacion_suma,
+                    COUNT(CASE WHEN comunicacion BETWEEN 1 AND 5 THEN 1 END)::BIGINT AS comunicacion_n,
+                    SUM(CASE WHEN interes BETWEEN 1 AND 5 THEN interes ELSE 0 END)::DOUBLE AS interes_suma,
+                    COUNT(CASE WHEN interes BETWEEN 1 AND 5 THEN 1 END)::BIGINT AS interes_n,
+                    SUM(CASE WHEN participacion BETWEEN 1 AND 5 THEN participacion ELSE 0 END)::DOUBLE AS participacion_suma,
+                    COUNT(CASE WHEN participacion BETWEEN 1 AND 5 THEN 1 END)::BIGINT AS participacion_n,
+                    SUM(CASE WHEN resolucion BETWEEN 1 AND 5 THEN resolucion ELSE 0 END)::DOUBLE AS resolucion_suma,
+                    COUNT(CASE WHEN resolucion BETWEEN 1 AND 5 THEN 1 END)::BIGINT AS resolucion_n,
+                    COUNT(CASE WHEN recomendacion BETWEEN 0 AND 10 THEN 1 END)::BIGINT AS nps_validas,
+                    COUNT(CASE WHEN recomendacion BETWEEN 9 AND 10 THEN 1 END)::BIGINT AS promotores,
+                    COUNT(CASE WHEN recomendacion BETWEEN 7 AND 8 THEN 1 END)::BIGINT AS pasivos,
+                    COUNT(CASE WHEN recomendacion BETWEEN 0 AND 6 THEN 1 END)::BIGINT AS detractores,
+                    COUNT(CASE WHEN recomendacion = 5 THEN 1 END)::BIGINT AS respuestas_cinco,
+                    MIN(fecha)::DATE AS primera_respuesta,
+                    MAX(fecha)::DATE AS ultima_respuesta
+                FROM "{quoted_table}"
+                WHERE fecha IS NOT NULL AND fecha::DATE <= DATE '{cutoff_text}'
+                GROUP BY mes, programa, curso, instructor, region
+                ORDER BY mes, programa, curso, instructor, region
+                """
+            )
+        )
+    )
+    sum_fields = ("dominio_suma", "comunicacion_suma", "interes_suma", "participacion_suma", "resolucion_suma")
+    count_fields = ("dominio_n", "comunicacion_n", "interes_n", "participacion_n", "resolucion_n")
+    response_count = sum(int(row["respuestas"]) for row in metrics)
+    rubric_sum = sum(float(row[field] or 0) for row in metrics for field in sum_fields)
+    rubric_count = sum(int(row[field] or 0) for row in metrics for field in count_fields)
+    promoters = sum(int(row["promotores"]) for row in metrics)
+    detractors = sum(int(row["detractores"]) for row in metrics)
+    nps_valid = sum(int(row["nps_validas"]) for row in metrics)
+    score_fives = sum(int(row["respuestas_cinco"]) for row in metrics)
+    isa = round(100.0 * rubric_sum / (5 * rubric_count), 2) if rubric_count else 0.0
+    nps = round(100.0 * (promoters - detractors) / nps_valid, 2) if nps_valid else 0.0
+    raw_comments = list(
+        _records(
+            connection.execute(
+                f"""
+                SELECT fecha::DATE AS fecha,
+                       COALESCE(NULLIF(TRIM(CAST(programa AS VARCHAR)), ''), 'Sin programa') AS programa,
+                       COALESCE(NULLIF(TRIM(CAST(curso AS VARCHAR)), ''), 'Sin curso') AS curso,
+                       COALESCE(NULLIF(TRIM(CAST(instructor AS VARCHAR)), ''), 'Sin instructor') AS instructor,
+                       COALESCE(NULLIF(TRIM(CAST(region AS VARCHAR)), ''), 'Sin región') AS region,
+                       recomendacion, TRIM(comentario) AS comentario
+                FROM "{quoted_table}"
+                WHERE fecha IS NOT NULL AND fecha::DATE <= DATE '{cutoff_text}'
+                  AND comentario IS NOT NULL AND LENGTH(TRIM(comentario)) >= 4
+                  AND LOWER(TRIM(comentario)) NOT IN ('ninguno', 'ninguna', 'no aplica', 'n/a')
+                ORDER BY fecha DESC
+                """
+            )
+        )
+    )
+    period = cutoff.strftime("%Y-%m")
+    return {
+        "data_kind": "satisfaction",
+        "period": period, "category": category, "category_label": category_label,
+        "cutoff_date": cutoff.isoformat(), "year": cutoff.year, "month": cutoff.month,
+        "total": rubric_count * 5, "completed": round(rubric_sum, 4),
+        "pending": round((rubric_count * 5) - rubric_sum, 4),
+        "progress_percentage": isa, "pending_percentage": round(100.0 - isa, 2),
+        "response_count": response_count, "isa": isa, "nps": nps,
+        "nps_valid_responses": nps_valid, "nps_promoter_responses": promoters,
+        "nps_detractor_responses": detractors, "score_five_responses": score_fives,
+        "nps_scale_status": "conventional_0_10",
+        "programs": sorted({str(row["programa"]) for row in metrics}),
+        "courses": sorted({str(row["curso"]) for row in metrics}),
+        "instructors": sorted({str(row["instructor"]) for row in metrics}),
+        "regions": sorted({str(row["region"]) for row in metrics}),
+        "positions": [], "metrics": metrics, "views": {}, "pending_rows": [],
+        "detail_rows": _build_comment_details(raw_comments),
     }
 
 
@@ -371,6 +591,7 @@ def _publish_dashboard(dataset: dict) -> dict:
     publication_revision = int(existing_metadata.get("publication_revision") or 0) + 1
     views_collection = category_ref.collection("view_chunks")
     pending_collection = category_ref.collection("pending_chunks")
+    detail_collection = category_ref.collection("detail_chunks")
 
     view_rows = {"cube": dataset["metrics"], **dataset["views"]}
     view_chunks = {
@@ -390,6 +611,7 @@ def _publish_dashboard(dataset: dict) -> dict:
     operations: list[tuple[str, object, dict | None]] = []
     current_view_ids = set()
     current_pending_ids = set()
+    current_detail_ids = set()
 
     for view, chunks in view_chunks.items():
         for index, rows in enumerate(chunks):
@@ -442,11 +664,20 @@ def _publish_dashboard(dataset: dict) -> dict:
             )
         )
 
+    detail_chunks = list(_chunks(dataset.get("detail_rows") or []))
+    for index, rows in enumerate(detail_chunks):
+        document_id = f"detail_{index:05d}"
+        current_detail_ids.add(document_id)
+        operations.append(("set", detail_collection.document(document_id), {"index": index, **_tabular_payload(rows)}))
+
     for snapshot in views_collection.stream():
         if snapshot.id not in current_view_ids:
             operations.append(("delete", snapshot.reference, None))
     for snapshot in pending_collection.stream():
         if snapshot.id not in current_pending_ids:
+            operations.append(("delete", snapshot.reference, None))
+    for snapshot in detail_collection.stream():
+        if snapshot.id not in current_detail_ids:
             operations.append(("delete", snapshot.reference, None))
 
     # Remove fragments created by schema v1 after its replacement is ready.
@@ -458,7 +689,7 @@ def _publish_dashboard(dataset: dict) -> dict:
     metadata = {
         key: value
         for key, value in dataset.items()
-        if key not in {"metrics", "views", "pending_rows"}
+        if key not in {"metrics", "views", "pending_rows", "detail_rows"}
     }
     view_counts = {
         view: len(chunks)
@@ -481,8 +712,9 @@ def _publish_dashboard(dataset: dict) -> dict:
             "pending_rows": len(dataset["pending_rows"]),
             "view_chunks": view_counts,
             "pending_chunks": len(pending_chunks),
+            "detail_chunks": len(detail_chunks),
             "pending_sections": pending_sections,
-            "schema_version": 3,
+            "schema_version": 4,
             "publication_revision": publication_revision,
             "publication_action": "replaced" if replaced_existing else "created",
             "updated_at": datetime.now(timezone.utc),
@@ -532,6 +764,6 @@ def _publish_dashboard(dataset: dict) -> dict:
         "metric_rows": len(dataset["metrics"]),
         "pending_rows": len(dataset["pending_rows"]),
         "view_documents": sum(view_counts.values()),
-        "detail_documents": len(pending_chunks),
+        "detail_documents": len(pending_chunks) + len(detail_chunks),
         "documents_written": written + 3,
     }

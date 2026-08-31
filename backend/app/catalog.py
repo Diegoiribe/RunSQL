@@ -263,6 +263,13 @@ def build_catalog(sql: str, sql_filename: str) -> tuple[tuple[FileDefinition, ..
 
     if not families and sql_filename and Path(sql_filename).stem.lower() != "consulta":
         combined_matches = re.findall(r"\b([a-z][a-z0-9_]*_p)\b", sql, flags=re.IGNORECASE)
+        # A process backed entirely by one or more explicitly declared
+        # workbooks (for example the satisfaction survey) does not need an
+        # invented P(x) family. Keep the fallback only for legacy category SQL
+        # files that actually reference a combined *_p table or have no fixed
+        # sources at all.
+        if definitions and not combined_matches:
+            return tuple(definitions), tuple(families)
         process_root = process_key.split("_")[0]
         preferred_matches = [
             value.lower() for value in combined_matches if process_root in value.lower()

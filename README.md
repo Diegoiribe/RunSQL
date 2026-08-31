@@ -183,6 +183,27 @@ reducir escrituras, lecturas y transferencia. Volver a ejecutar la misma
 categoría y mes reemplaza sus bloques anteriores; nunca se guarda un documento
 de Firestore por cada fila del SQL.
 
+### Encuesta de satisfacción
+
+El proceso `Encuesta de satisfaccion.sql` recibe un solo archivo llamado
+`Encuesta de satisfacción.xlsx`. Lee únicamente las pestañas de respuestas de
+Competencias del Líder, LAC, Servicios Financieros, Entrevista, Óptica,
+Conductores y HAMI; los tableros, síntesis y fórmulas auxiliares del libro no se
+cargan.
+
+Después de seleccionar el SQL y el Excel, publica el corte con el comando normal:
+
+```text
+start --d(2026-08-28)
+```
+
+RunSQL unifica programa, curso, instructor, región, rubros, recomendación y
+comentario. DataStore recibe un cubo agregado para ISA/NPS, comentarios
+recientes y conteos temáticos de fortalezas y oportunidades. El NPS sigue la
+regla estándar de 0 a 10, pero la vista
+muestra una advertencia mientras existan muchas respuestas con valor 5 para que
+se valide si algún formulario histórico utilizó una escala distinta.
+
 Dentro de cada bloque, `columns` contiene los nombres una sola vez y `rows`
 contiene arreglos de valores. En los bloques de pendientes, `region` y
 `position` también se guardan una sola vez en la cabecera. La web de reportes

@@ -9,11 +9,14 @@ from starlette.datastructures import UploadFile
 
 from app.catalog import build_catalog, definition_targets
 from app.firebase_publish import (
+    _comment_labels,
     _publish_dashboard,
     _tabular_payload,
     apply_cutoff_date,
     build_dashboard_dataset,
+    build_satisfaction_dashboard_dataset,
     decode_tabular_payload,
+    result_table_name,
 )
 from app.main import execute, match_definition, match_family, prepare_exports, prepare_statements, split_sql_script, validate_sql
 
@@ -159,6 +162,37 @@ class RunSqlTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(family.table_name, "almacenista_p")
         self.assertEqual(period, 12)
 
+    def test_gerente_zona_files_match_historical_internal_period_table(self):
+        rules_sql = """
+        SELECT * FROM gerente_titular_p;
+        CREATE OR REPLACE VIEW resultados_capacitacion_gerente AS
+        SELECT 1 AS completados, 1 AS total;
+        """
+        definitions, families = build_catalog(rules_sql, "Gerente Zona.sql")
+
+        self.assertEqual(definitions, ())
+        self.assertEqual(len(families), 1)
+        self.assertEqual(families[0].name, "Gerente Zona P(x)")
+        self.assertEqual(families[0].table_name, "gerente_titular_p")
+        family, period = match_family("Gerente Zona P2.xlsx", families)
+        self.assertEqual(family.table_name, "gerente_titular_p")
+        self.assertEqual(period, 2)
+
+    def test_publish_maps_gerente_zona_to_its_explicit_historical_table(self):
+        connection = duckdb.connect(":memory:")
+        try:
+            connection.execute(
+                "CREATE TABLE resultados_capacitacion_gerente AS SELECT 1 AS total"
+            )
+            self.assertEqual(
+                result_table_name(connection, "gerente_zona"),
+                "resultados_capacitacion_gerente",
+            )
+            with self.assertRaisesRegex(ValueError, "resultados_capacitacion_cajero"):
+                result_table_name(connection, "cajero")
+        finally:
+            connection.close()
+
     def test_catalog_supports_multiple_adaptive_period_families(self):
         rules_sql = """
         CREATE OR REPLACE TABLE cat_detalle_operacion AS
@@ -207,6 +241,81 @@ class RunSqlTests(unittest.IsolatedAsyncioTestCase):
         demographics = next(item for item in definitions if item.table_name == "demograficos_staff_fuente")
         self.assertEqual(definition_targets(demographics)[0].range_name, "A2:Z")
         self.assertEqual(families[0].table_name, "staff_p")
+
+    def test_fixed_workbook_process_does_not_invent_period_family(self):
+        rules_sql = """
+        CREATE OR REPLACE TABLE encuesta_a AS
+        SELECT * FROM read_xlsx('/fuentes/Encuesta.xlsx', sheet = 'A');
+        CREATE OR REPLACE TABLE encuesta_b AS
+        SELECT * FROM read_xlsx('/fuentes/Encuesta.xlsx', sheet = 'B');
+        SELECT * FROM encuesta_a;
+        """
+        definitions, families = build_catalog(rules_sql, "Encuesta de satisfaccion.sql")
+        self.assertEqual(len(definitions), 1)
+        self.assertEqual(families, ())
+
+    def test_satisfaction_dataset_aggregates_isa_nps_and_quality_flag(self):
+        connection = duckdb.connect(":memory:")
+        connection.execute(
+            """
+            CREATE TABLE resultados_satisfaccion AS
+            SELECT * FROM (VALUES
+                (TIMESTAMP '2026-07-10 10:00:00', 'HAMI', 'HAMI', 'Ana', 'Norte', 'Puesto', 5, 5, 5, 5, 5, 10, 'Excelente curso'),
+                (TIMESTAMP '2026-07-11 10:00:00', 'HAMI', 'HAMI', 'Ana', 'Norte', 'Puesto', 4, 4, 4, 4, 4, 5, 'Puede mejorar')
+            ) AS t(fecha, programa, curso, instructor, region, puesto, dominio, comunicacion, interes, participacion, resolucion, recomendacion, comentario)
+            """
+        )
+        dataset = build_satisfaction_dashboard_dataset(
+            connection, "encuesta_de_satisfaccion", "Encuesta de satisfacción", date(2026, 7, 31)
+        )
+        self.assertEqual(dataset["data_kind"], "satisfaction")
+        self.assertEqual(dataset["response_count"], 2)
+        self.assertEqual(dataset["isa"], 90.0)
+        self.assertEqual(dataset["nps"], 0.0)
+        self.assertEqual(dataset["nps_scale_status"], "conventional_0_10")
+        self.assertEqual(dataset["score_five_responses"], 1)
+        self.assertEqual(
+            len([row for row in dataset["detail_rows"] if row["record_type"] == "comment"]),
+            2,
+        )
+        self.assertTrue(
+            any(row["record_type"] == "theme" for row in dataset["detail_rows"])
+        )
+        connection.close()
+
+    def test_comment_sentiment_does_not_confuse_improvement_with_an_opportunity(self):
+        self.assertEqual(
+            _comment_labels("Fue muy amena y participativa. Ideal para mejorar habilidades.")[1],
+            "positive",
+        )
+        self.assertEqual(
+            _comment_labels("Excelente, realizó dinámicas y siempre estuvo atento; respondió de la mejor forma.")[1],
+            "positive",
+        )
+        self.assertEqual(
+            _comment_labels("Mejorar el equipo: algunas partes ya no funcionan.")[1],
+            "negative",
+        )
+        self.assertEqual(
+            _comment_labels("Excelente curso, pero deben mejorar los materiales para práctica.")[1],
+            "negative",
+        )
+        self.assertEqual(
+            _comment_labels("Dominio de los temas, con un carisma impresionante y conecta muy rápido con las personas.")[1],
+            "positive",
+        )
+        self.assertEqual(
+            _comment_labels("El curso fue muy práctico; así deberían ser todos los cursos, con gente dinámica.")[1],
+            "positive",
+        )
+        self.assertEqual(
+            _comment_labels("El instructor no fue claro y fue difícil de seguir.")[1],
+            "negative",
+        )
+        self.assertEqual(
+            _comment_labels("El curso fue bueno, pero el equipo no funciona.")[1],
+            "negative",
+        )
 
     def test_staff_catalog_accepts_confidential_demographics_and_periods(self):
         rules_sql = """
@@ -357,6 +466,12 @@ class RunSqlTests(unittest.IsolatedAsyncioTestCase):
                     "curso": "Curso A",
                 }
             ],
+            "detail_rows": [
+                {
+                    "record_type": "comment",
+                    "comentario": "Excelente curso",
+                }
+            ],
         }
         updated = {
             **first,
@@ -398,12 +513,19 @@ class RunSqlTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(metadata["pending"], 0)
         self.assertEqual(metadata["publication_action"], "replaced")
         self.assertEqual(metadata["publication_revision"], 2)
+        self.assertEqual(metadata["detail_chunks"], 1)
         self.assertEqual(list(category.collection("pending_chunks").stream()), [])
 
         cube = category.collection("view_chunks").document("cube_00000").get()
         rows = decode_tabular_payload(cube.to_dict())
         self.assertEqual(rows[0]["total"], 3)
         self.assertEqual(rows[0]["completados"], 3)
+
+        details = category.collection("detail_chunks").document("detail_00000").get()
+        self.assertEqual(
+            decode_tabular_payload(details.to_dict()),
+            [{"record_type": "comment", "comentario": "Excelente curso"}],
+        )
 
     async def test_execute_returns_xlsx_exports(self):
         files = [

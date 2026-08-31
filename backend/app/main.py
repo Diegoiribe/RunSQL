@@ -28,6 +28,7 @@ from .firebase_publish import (
     _firebase_client,
     apply_cutoff_date,
     build_dashboard_dataset,
+    build_satisfaction_dashboard_dataset,
     category_from_filename,
     decode_tabular_payload,
     publish_dashboard,
@@ -268,6 +269,7 @@ def read_dataframe(
     payload: bytes,
     sheet_name: str | int = 0,
     range_name: str = "",
+    workbook: pd.ExcelFile | None = None,
 ) -> pd.DataFrame:
     extension = Path(filename).suffix.lower()
     try:
@@ -288,7 +290,7 @@ def read_dataframe(
             skiprows = max(int(first_row) - 1, 0)
             usecols = f"{first_column}:{last_column}"
         return pd.read_excel(
-            io.BytesIO(payload),
+            workbook if workbook is not None else io.BytesIO(payload),
             sheet_name=sheet_name,
             dtype=str,
             skiprows=skiprows,
@@ -398,6 +400,14 @@ def dashboard_category(period: str, category: str) -> dict:
             "courses": metadata.get("courses") or [],
             "pendingSections": metadata.get("pending_sections") or [],
             "history": (history or {}).get("periods") or {},
+            "dataKind": str(metadata.get("data_kind") or "training"),
+            "programs": metadata.get("programs") or [],
+            "instructors": metadata.get("instructors") or [],
+            "responseCount": int(metadata.get("response_count") or 0),
+            "isa": float(metadata.get("isa") or 0),
+            "nps": float(metadata.get("nps") or 0),
+            "scoreFiveResponses": int(metadata.get("score_five_responses") or 0),
+            "npsScaleStatus": str(metadata.get("nps_scale_status") or ""),
         }
     except HTTPException:
         raise
@@ -480,6 +490,35 @@ def dashboard_all_pending(period: str, category: str) -> list[dict]:
                 for row in decode_tabular_payload(payload)
             )
         return rows
+    except HTTPException:
+        raise
+    except Exception as error:
+        raise HTTPException(
+            status_code=502,
+            detail=f"No se pudo leer el detalle de Firebase: {error}",
+        ) from error
+
+
+@app.get("/api/dashboard/{period}/{category}/details")
+def dashboard_details(period: str, category: str) -> list[dict]:
+    _validate_dashboard_path(period, r"\d{4}-\d{2}", "Periodo")
+    _validate_dashboard_path(category, r"[a-z0-9_]+", "Categoría")
+    try:
+        category_ref = (
+            _dashboard_client().collection("periods")
+            .document(period)
+            .collection("categories")
+            .document(category)
+        )
+        snapshots = sorted(
+            category_ref.collection("detail_chunks").stream(),
+            key=lambda item: int((item.to_dict() or {}).get("index", 0)),
+        )
+        return [
+            row
+            for snapshot in snapshots
+            for row in decode_tabular_payload(snapshot.to_dict() or {})
+        ]
     except HTTPException:
         raise
     except Exception as error:
@@ -601,18 +640,35 @@ async def execute(
                 detail=f"{filename} supera el límite de {MAX_FILE_SIZE_MB} MB.",
             )
         if definition is not None:
-            target_frames = [
-                (
-                    target.table_name,
-                    read_dataframe(
-                        filename,
-                        payload,
-                        target.sheet_name,
-                        target.range_name,
-                    ),
-                )
-                for target in definition_targets(definition)
-            ]
+            targets = definition_targets(definition)
+            if extension == ".csv":
+                target_frames = [
+                    (target.table_name, read_dataframe(filename, payload, target.sheet_name, target.range_name))
+                    for target in targets
+                ]
+            else:
+                # Parse the workbook package once when one uploaded file feeds
+                # several source tables. Formula-heavy survey books otherwise
+                # paid the ZIP/XML opening cost once per worksheet.
+                try:
+                    with pd.ExcelFile(io.BytesIO(payload), engine="openpyxl") as workbook:
+                        target_frames = [
+                            (
+                                target.table_name,
+                                read_dataframe(
+                                    filename, payload, target.sheet_name,
+                                    target.range_name, workbook,
+                                ),
+                            )
+                            for target in targets
+                        ]
+                except HTTPException:
+                    raise
+                except Exception as error:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"No se pudo abrir {filename}: {error}",
+                    ) from error
         else:
             target_frames = [
                 (f"{family.table_name}{period}", read_dataframe(filename, payload))
@@ -697,12 +753,15 @@ async def execute(
         if publish_to_firebase:
             category, category_label = category_from_filename(sql_filename)
             try:
-                dataset = build_dashboard_dataset(
-                    connection,
-                    category,
-                    category_label,
-                    validate_cutoff_date(cutoff_date),
-                )
+                cutoff = validate_cutoff_date(cutoff_date)
+                if category == "encuesta_de_satisfaccion":
+                    dataset = build_satisfaction_dashboard_dataset(
+                        connection, category, category_label, cutoff
+                    )
+                else:
+                    dataset = build_dashboard_dataset(
+                        connection, category, category_label, cutoff
+                    )
                 firebase_result = publish_dashboard(dataset)
             except FirebaseConfigurationError as error:
                 raise HTTPException(status_code=503, detail=str(error)) from error
