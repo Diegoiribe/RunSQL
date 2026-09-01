@@ -574,6 +574,7 @@ async def execute(
     publish_to_firebase: bool = Form(False),
     publication_name: str = Form(""),
     collection_link: str = Form(""),
+    report_type: str = Form(""),
 ) -> dict:
     if not isinstance(sql_filename, str):
         sql_filename = "consulta.sql"
@@ -591,15 +592,23 @@ async def execute(
         publication_name = ""
     if not isinstance(collection_link, str):
         collection_link = ""
+    if not isinstance(report_type, str):
+        report_type = ""
     preview_table = preview_table.strip()
     cutoff_date = cutoff_date.strip()
     publication_name = publication_name.strip()
     collection_link = collection_link.strip()
+    report_type = report_type.strip().lower()
     preview_limit = max(1, min(preview_limit, 1_000))
     if len(publication_name) > 120:
         raise HTTPException(status_code=400, detail="--n admite hasta 120 caracteres.")
     if len(collection_link) > 120:
         raise HTTPException(status_code=400, detail="--l admite hasta 120 caracteres.")
+    if report_type not in {"", "c", "s", "e"}:
+        raise HTTPException(
+            status_code=400,
+            detail="--t solo admite c (capacitación), s (satisfacción) o e (estatus EIC).",
+        )
     if preview_table and not re.fullmatch(r"[a-zA-Z_][a-zA-Z0-9_]*", preview_table):
         raise HTTPException(status_code=400, detail="El nombre de la tabla para preview no es válido.")
     if publish_to_firebase and not cutoff_date:
@@ -790,11 +799,16 @@ async def execute(
                 )
             try:
                 cutoff = validate_cutoff_date(cutoff_date)
-                if source_category == "encuesta_de_satisfaccion":
+                effective_report_type = report_type or (
+                    "s" if source_category == "encuesta_de_satisfaccion"
+                    else "e" if source_category == "eic_administrativa"
+                    else "c"
+                )
+                if effective_report_type == "s":
                     dataset = build_satisfaction_dashboard_dataset(
                         connection, source_category, default_category_label, cutoff
                     )
-                elif source_category == "eic_administrativa":
+                elif effective_report_type == "e":
                     dataset = build_eic_dashboard_dataset(
                         connection, source_category, default_category_label, cutoff
                     )
@@ -806,6 +820,7 @@ async def execute(
                 dataset["category_label"] = category_label
                 dataset["collection_key"] = collection_key
                 dataset["collection_label"] = collection_link or None
+                dataset["report_type"] = effective_report_type
                 firebase_result = publish_dashboard(dataset)
             except FirebaseConfigurationError as error:
                 raise HTTPException(status_code=503, detail=str(error)) from error

@@ -654,6 +654,7 @@ class RunSqlTests(unittest.IsolatedAsyncioTestCase):
                 publish_to_firebase=True,
                 publication_name="EIC Presupuesto",
                 collection_link="Administración EIC",
+                report_type="c",
             )
 
         dataset = publish.call_args.args[0]
@@ -661,6 +662,7 @@ class RunSqlTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(dataset["category_label"], "EIC Presupuesto")
         self.assertEqual(dataset["collection_key"], "administracion_eic")
         self.assertEqual(dataset["collection_label"], "Administración EIC")
+        self.assertEqual(dataset["report_type"], "c")
 
     async def test_preview_generated_table(self):
         files = [

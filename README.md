@@ -134,13 +134,16 @@ Firestore. El nombre del SQL determina la categoría (`Asesor.sql` publica
 El nombre público y la colección se pueden indicar sin renombrar el SQL:
 
 ```text
-start --d(2026-07-30) --n(EIC Presupuesto) --l(EIC)
+start --d(2026-07-30) --t(e) --n(EIC Presupuesto) --l(Staff)
 ```
 
 - `--n(nombre)` define el nombre visible y la clave independiente del reporte.
 - `--l(colección)` lo vincula mediante metadatos con una colección existente.
+- `--t(tipo)` selecciona la estructura: `c` para capacitación, `s` para encuesta
+  de satisfacción y `e` para estatus administrativo EIC.
 - Las opciones pueden escribirse en cualquier orden. `--d(...)` continúa siendo
-  obligatorio; `--n(...)` y `--l(...)` son opcionales.
+  obligatorio; `--t(...)`, `--n(...)` y `--l(...)` son opcionales para conservar
+  compatibilidad con los procesos existentes.
 
 El vínculo no reemplaza la colección: cada reporte conserva su propio documento
 y DataStore puede agrupar todos los que compartan `collection_key`.

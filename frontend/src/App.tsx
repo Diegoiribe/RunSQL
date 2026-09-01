@@ -471,7 +471,7 @@ export default function App() {
   async function execute(
     statementOverride?: string,
     preview?: { table: string; limit: number },
-    publish?: { cutoffDate: string; name?: string; collectionLink?: string }
+    publish?: { cutoffDate: string; name?: string; collectionLink?: string; reportType?: string }
   ) {
     const statement = statementOverride ?? sql;
     const unassignedFiles = Object.entries(uploads)
@@ -527,6 +527,7 @@ export default function App() {
       if (publish.name) body.append('publication_name', publish.name);
       if (publish.collectionLink)
         body.append('collection_link', publish.collectionLink);
+      if (publish.reportType) body.append('report_type', publish.reportType);
     }
     Object.values(uploads).forEach((file) => body.append('files', file));
     try {
@@ -648,11 +649,11 @@ export default function App() {
       sqlFileRef.current?.click();
     } else if (/^start\b/i.test(rawCommand)) {
       const optionMatches = [
-        ...rawCommand.matchAll(/--([dnl])\(([^()]*)\)/gi)
+        ...rawCommand.matchAll(/--([dnlt])\(([^()]*)\)/gi)
       ];
       const residue = rawCommand
         .replace(/^start\b/i, '')
-        .replace(/--[dnl]\([^()]*\)/gi, '')
+        .replace(/--[dnlt]\([^()]*\)/gi, '')
         .trim();
       const options = new Map<string, string>();
       let optionError = residue ? `opción no reconocida: ${residue}` : '';
@@ -666,10 +667,13 @@ export default function App() {
       const cutoffDate = options.get('d') ?? '';
       if (!optionError && !/^\d{4}-\d{2}-\d{2}$/.test(cutoffDate))
         optionError = 'falta --d(AAAA-MM-DD)';
+      const reportType = (options.get('t') ?? '').toLowerCase();
+      if (!optionError && reportType && !['c', 's', 'e'].includes(reportType))
+        optionError = '--t solo admite c, s o e';
       if (optionError) {
         setTerminalLines((lines) => [
           ...lines,
-          `error: ${optionError}. Ejemplo: start --d(2026-07-30) --n(EIC Presupuesto) --l(EIC)`
+          `error: ${optionError}. Ejemplo: start --d(2026-07-30) --t(e) --n(EIC Presupuesto) --l(Staff)`
         ]);
         return;
       }
@@ -687,13 +691,14 @@ export default function App() {
         void execute(undefined, undefined, {
           cutoffDate,
           name: options.get('n'),
-          collectionLink: options.get('l')
+          collectionLink: options.get('l'),
+          reportType: reportType || undefined
         });
     } else if (command === 'help') {
       setTerminalLines((lines) => [
         ...lines,
         'upload                    abrir un archivo SQL',
-        'start --d(fecha) [--n(nombre)] [--l(colección)]',
+        'start --d(fecha) [--t(c|s|e)] [--n(nombre)] [--l(colección)]',
         'show tables               listar tablas generadas',
         'show <tabla> limit <x>     previsualizar y ordenar una tabla',
         'SELECT / WITH              ejecutar una consulta',
