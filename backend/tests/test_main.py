@@ -1,6 +1,7 @@
 import io
 import unittest
 from datetime import date
+from decimal import Decimal
 from unittest.mock import patch
 
 import duckdb
@@ -11,6 +12,7 @@ from app.catalog import build_catalog, definition_targets
 from app.firebase_publish import (
     _comment_labels,
     _publish_dashboard,
+    _safe,
     _tabular_payload,
     apply_cutoff_date,
     build_dashboard_dataset,
@@ -159,6 +161,9 @@ class RunSqlTests(unittest.IsolatedAsyncioTestCase):
                 {"persona": 2, "curso": "Excel"},
             ],
         )
+
+    def test_decimal_values_are_json_safe(self):
+        self.assertEqual(_safe(Decimal("4004541.60755")), 4004541.60755)
 
     def test_eic_dataset_preserves_financial_views(self):
         connection = duckdb.connect()

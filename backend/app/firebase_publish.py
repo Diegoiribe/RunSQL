@@ -6,6 +6,7 @@ import re
 import unicodedata
 from hashlib import sha1
 from datetime import date, datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 from threading import Lock
 from typing import Iterable, Iterator
@@ -111,6 +112,8 @@ def result_table_name(connection: duckdb.DuckDBPyConnection, category: str) -> s
 def _safe(value):
     if value is None or (not isinstance(value, (list, dict)) and pd.isna(value)):
         return None
+    if isinstance(value, Decimal):
+        return float(value)
     if isinstance(value, (pd.Timestamp, datetime, date)):
         return value.isoformat()
     if hasattr(value, "item"):
