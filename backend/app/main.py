@@ -28,6 +28,7 @@ from .firebase_publish import (
     _firebase_client,
     apply_cutoff_date,
     build_dashboard_dataset,
+    build_eic_dashboard_dataset,
     build_satisfaction_dashboard_dataset,
     category_from_filename,
     decode_tabular_payload,
@@ -276,27 +277,33 @@ def read_dataframe(
     try:
         if extension == ".csv":
             try:
-                return pd.read_csv(io.BytesIO(payload), encoding="utf-8-sig")
+                dataframe = pd.read_csv(io.BytesIO(payload), encoding="utf-8-sig")
             except UnicodeDecodeError:
-                return pd.read_csv(io.BytesIO(payload), encoding="latin-1")
-        skiprows = None
-        usecols = None
-        if range_name:
-            range_match = re.fullmatch(
-                r"([A-Za-z]+)(\d+):([A-Za-z]+)(?:\d+)?", range_name.strip()
+                dataframe = pd.read_csv(io.BytesIO(payload), encoding="latin-1")
+        else:
+            skiprows = None
+            usecols = None
+            if range_name:
+                range_match = re.fullmatch(
+                    r"([A-Za-z]+)(\d+):([A-Za-z]+)(?:\d+)?", range_name.strip()
+                )
+                if not range_match:
+                    raise ValueError(f"el rango '{range_name}' no es compatible")
+                first_column, first_row, last_column = range_match.groups()
+                skiprows = max(int(first_row) - 1, 0)
+                usecols = f"{first_column}:{last_column}"
+            dataframe = pd.read_excel(
+                workbook if workbook is not None else io.BytesIO(payload),
+                sheet_name=sheet_name,
+                dtype=str,
+                skiprows=skiprows,
+                usecols=usecols,
             )
-            if not range_match:
-                raise ValueError(f"el rango '{range_name}' no es compatible")
-            first_column, first_row, last_column = range_match.groups()
-            skiprows = max(int(first_row) - 1, 0)
-            usecols = f"{first_column}:{last_column}"
-        return pd.read_excel(
-            workbook if workbook is not None else io.BytesIO(payload),
-            sheet_name=sheet_name,
-            dtype=str,
-            skiprows=skiprows,
-            usecols=usecols,
-        )
+        dataframe.columns = [
+            column.strip() if isinstance(column, str) else column
+            for column in dataframe.columns
+        ]
+        return dataframe
     except Exception as error:
         raise HTTPException(
             status_code=400,
@@ -785,6 +792,10 @@ async def execute(
                 cutoff = validate_cutoff_date(cutoff_date)
                 if source_category == "encuesta_de_satisfaccion":
                     dataset = build_satisfaction_dashboard_dataset(
+                        connection, source_category, default_category_label, cutoff
+                    )
+                elif source_category == "eic_administrativa":
+                    dataset = build_eic_dashboard_dataset(
                         connection, source_category, default_category_label, cutoff
                     )
                 else:

@@ -395,6 +395,105 @@ def build_dashboard_dataset(
     }
 
 
+def build_eic_dashboard_dataset(
+    connection: duckdb.DuckDBPyConnection,
+    category: str,
+    category_label: str,
+    cutoff: date,
+) -> dict:
+    """Package the administrative EIC model without flattening its finances."""
+    required_tables = {
+        "eic_resumen_c_level",
+        "eic_resumen_direccion",
+        "eic_resumen_iniciativa",
+        "eic_estatus_cotizaciones_direccion",
+        "eic_estatus_capacitaciones_direccion",
+        "eic_estatus_pagos_direccion",
+        "eic_capacitaciones",
+        "eic_pagos",
+        "eic_controles",
+    }
+    existing_tables = {
+        row[0]
+        for row in connection.execute(
+            "SELECT table_name FROM information_schema.tables WHERE table_schema = 'main'"
+        ).fetchall()
+    }
+    missing = sorted(required_tables - existing_tables)
+    if missing:
+        raise ValueError(
+            "El SQL de EIC no generó las tablas requeridas: " + ", ".join(missing)
+        )
+
+    def table_rows(table: str) -> list[dict]:
+        quoted = table.replace('"', '""')
+        return list(_records(connection.execute(f'SELECT * FROM "{quoted}"')))
+
+    c_level = table_rows("eic_resumen_c_level")
+    directions = table_rows("eic_resumen_direccion")
+    initiatives = table_rows("eic_resumen_iniciativa")
+
+    # Keep the cube compatible with the existing reader while DataStore uses
+    # the richer EIC views for its dedicated financial report.
+    metrics = []
+    for row in initiatives:
+        completed = int(row.get("estatus_grupo_principal") == "Impartido")
+        metrics.append(
+            {
+                "puesto": row.get("direccion_nivel_2") or "Sin dirección",
+                "region": row.get("direccion_c_level") or "Sin dirección C-Level",
+                "curso": row.get("nombre_iniciativa") or "Sin nombre",
+                "total": 1,
+                "completados": completed,
+                "pendientes": 1 - completed,
+                "avance": float(completed * 100),
+                "identificador": row.get("identificador"),
+            }
+        )
+
+    budget = sum(float(row.get("presupuesto_autorizado_mxn") or 0) for row in c_level)
+    investment = sum(float(row.get("inversion_actual_mxn") or 0) for row in c_level)
+    remaining = budget - investment
+    progress = round(100.0 * investment / budget, 2) if budget else 0.0
+    period = cutoff.strftime("%Y-%m")
+    return {
+        "data_kind": "eic_administrative",
+        "period": period,
+        "category": category,
+        "category_label": category_label,
+        "cutoff_date": cutoff.isoformat(),
+        "year": cutoff.year,
+        "month": cutoff.month,
+        "total": budget,
+        "completed": investment,
+        "pending": remaining,
+        "progress_percentage": progress,
+        "pending_percentage": round(100.0 - progress, 2),
+        "positions": sorted({str(row["puesto"]) for row in metrics}),
+        "regions": sorted({str(row["region"]) for row in metrics}),
+        "courses": sorted({str(row["curso"]) for row in metrics}),
+        "metrics": metrics,
+        "views": {
+            "c_level": c_level,
+            "directions": directions,
+            "initiatives": initiatives,
+            "quotation_status": table_rows("eic_estatus_cotizaciones_direccion"),
+            "training_status": table_rows("eic_estatus_capacitaciones_direccion"),
+            "payment_status": table_rows("eic_estatus_pagos_direccion"),
+            "training_groups": table_rows("eic_capacitaciones"),
+            "payments": table_rows("eic_pagos"),
+            "controls": table_rows("eic_controles"),
+        },
+        "pending_rows": [],
+        "detail_rows": [],
+        "eic_views": [
+            "c_level", "directions", "initiatives", "quotation_status",
+            "training_status", "payment_status", "training_groups", "payments",
+            "controls",
+        ],
+    }
+
+
 def build_satisfaction_dashboard_dataset(
     connection: duckdb.DuckDBPyConnection,
     category: str,

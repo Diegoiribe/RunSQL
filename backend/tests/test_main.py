@@ -14,6 +14,7 @@ from app.firebase_publish import (
     _tabular_payload,
     apply_cutoff_date,
     build_dashboard_dataset,
+    build_eic_dashboard_dataset,
     build_satisfaction_dashboard_dataset,
     decode_tabular_payload,
     result_table_name,
@@ -151,6 +152,33 @@ class RunSqlTests(unittest.IsolatedAsyncioTestCase):
                 {"persona": 2, "curso": "Excel"},
             ],
         )
+
+    def test_eic_dataset_preserves_financial_views(self):
+        connection = duckdb.connect()
+        connection.execute("""
+            CREATE TABLE eic_resumen_c_level AS
+            SELECT 100.0 AS presupuesto_autorizado_mxn, 40.0 AS inversion_actual_mxn;
+            CREATE TABLE eic_resumen_direccion AS SELECT 'Dirección A' AS direccion_nivel_2;
+            CREATE TABLE eic_resumen_iniciativa AS
+            SELECT 'EIC-1' AS identificador, 'Curso A' AS nombre_iniciativa,
+                   'Dirección A' AS direccion_nivel_2, 'C-Level' AS direccion_c_level,
+                   'Impartido' AS estatus_grupo_principal;
+            CREATE TABLE eic_estatus_cotizaciones_direccion AS SELECT 1 AS registros;
+            CREATE TABLE eic_estatus_capacitaciones_direccion AS SELECT 1 AS registros;
+            CREATE TABLE eic_estatus_pagos_direccion AS SELECT 1 AS registros;
+            CREATE TABLE eic_capacitaciones AS SELECT 'EIC-1' AS identificador;
+            CREATE TABLE eic_pagos AS SELECT 'EIC-1' AS identificador;
+            CREATE TABLE eic_controles AS SELECT 'PASS' AS estatus;
+        """)
+        dataset = build_eic_dashboard_dataset(
+            connection, "eic_administrativa", "EIC Administrativa", date(2026, 8, 31)
+        )
+        self.assertEqual(dataset["data_kind"], "eic_administrative")
+        self.assertEqual(dataset["total"], 100.0)
+        self.assertEqual(dataset["completed"], 40.0)
+        self.assertEqual(dataset["metrics"][0]["completados"], 1)
+        self.assertEqual(len(dataset["views"]["initiatives"]), 1)
+        self.assertEqual(len(dataset["views"]["payments"]), 1)
 
     def test_dynamic_rules_ignore_case_and_accents(self):
         definitions, families = build_catalog(RULES_SQL, "ALMACÉNISTA.sql")
