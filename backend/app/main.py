@@ -547,6 +547,54 @@ def dashboard_details(period: str, category: str) -> list[dict]:
         ) from error
 
 
+@app.get("/api/dashboard/{period}/{category}/views")
+def dashboard_views(period: str, category: str) -> dict[str, list[dict]]:
+    """Return the named analytical views published for a dashboard."""
+    _validate_dashboard_path(period, r"\d{4}-\d{2}", "Periodo")
+    _validate_dashboard_path(category, r"[a-z0-9_]+", "Categoría")
+    try:
+        category_ref = (
+            _dashboard_client().collection("periods")
+            .document(period)
+            .collection("categories")
+            .document(category)
+        )
+        metadata_snapshot = category_ref.get()
+        if not metadata_snapshot.exists:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No hay datos publicados para {category} en {period}.",
+            )
+        metadata = metadata_snapshot.to_dict() or {}
+        allowed_views = {
+            str(view)
+            for view in (metadata.get("eic_views") or [])
+            if str(view) != "cube"
+        }
+        snapshots = sorted(
+            category_ref.collection("view_chunks").stream(),
+            key=lambda item: (
+                str((item.to_dict() or {}).get("view") or ""),
+                int((item.to_dict() or {}).get("index", 0)),
+            ),
+        )
+        views: dict[str, list[dict]] = {view: [] for view in allowed_views}
+        for snapshot in snapshots:
+            payload = snapshot.to_dict() or {}
+            view = str(payload.get("view") or "")
+            if view not in allowed_views:
+                continue
+            views[view].extend(decode_tabular_payload(payload))
+        return views
+    except HTTPException:
+        raise
+    except Exception as error:
+        raise HTTPException(
+            status_code=502,
+            detail=f"No se pudieron leer las vistas administrativas: {error}",
+        ) from error
+
+
 @app.get("/api/catalog")
 def catalog() -> dict:
     return catalog_payload((), ())

@@ -168,8 +168,13 @@ class RunSqlTests(unittest.IsolatedAsyncioTestCase):
     def test_eic_dataset_preserves_financial_views(self):
         connection = duckdb.connect()
         connection.execute("""
+            CREATE TABLE eic_resumen_general AS
+            SELECT 100.0 AS presupuesto_autorizado_mxn,
+                   40.0 AS inversion_actual_mxn,
+                   60.0 AS presupuesto_por_ejercer_mxn,
+                   0.4 AS avance_presupuesto;
             CREATE TABLE eic_resumen_c_level AS
-            SELECT 100.0 AS presupuesto_autorizado_mxn, 40.0 AS inversion_actual_mxn;
+            SELECT 140.0 AS presupuesto_autorizado_mxn, 55.0 AS inversion_actual_mxn;
             CREATE TABLE eic_resumen_direccion AS SELECT 'Dirección A' AS direccion_nivel_2;
             CREATE TABLE eic_resumen_iniciativa AS
             SELECT 'EIC-1' AS identificador, 'Curso A' AS nombre_iniciativa,
@@ -188,6 +193,9 @@ class RunSqlTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(dataset["data_kind"], "eic_administrative")
         self.assertEqual(dataset["total"], 100.0)
         self.assertEqual(dataset["completed"], 40.0)
+        self.assertEqual(dataset["pending"], 60.0)
+        self.assertEqual(dataset["progress_percentage"], 40.0)
+        self.assertEqual(dataset["views"]["general"][0]["presupuesto_autorizado_mxn"], 100.0)
         self.assertEqual(dataset["metrics"][0]["completados"], 1)
         self.assertEqual(len(dataset["views"]["initiatives"]), 1)
         self.assertEqual(len(dataset["views"]["payments"]), 1)

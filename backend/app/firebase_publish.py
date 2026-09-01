@@ -406,6 +406,7 @@ def build_eic_dashboard_dataset(
 ) -> dict:
     """Package the administrative EIC model without flattening its finances."""
     required_tables = {
+        "eic_resumen_general",
         "eic_resumen_c_level",
         "eic_resumen_direccion",
         "eic_resumen_iniciativa",
@@ -432,6 +433,7 @@ def build_eic_dashboard_dataset(
         quoted = table.replace('"', '""')
         return list(_records(connection.execute(f'SELECT * FROM "{quoted}"')))
 
+    general = table_rows("eic_resumen_general")
     c_level = table_rows("eic_resumen_c_level")
     directions = table_rows("eic_resumen_direccion")
     initiatives = table_rows("eic_resumen_iniciativa")
@@ -454,10 +456,17 @@ def build_eic_dashboard_dataset(
             }
         )
 
-    budget = sum(float(row.get("presupuesto_autorizado_mxn") or 0) for row in c_level)
-    investment = sum(float(row.get("inversion_actual_mxn") or 0) for row in c_level)
-    remaining = budget - investment
-    progress = round(100.0 * investment / budget, 2) if budget else 0.0
+    general_row = general[0] if general else {}
+    budget = float(general_row.get("presupuesto_autorizado_mxn") or 0)
+    investment = float(general_row.get("inversion_actual_mxn") or 0)
+    remaining = float(
+        general_row.get("presupuesto_por_ejercer_mxn")
+        if general_row.get("presupuesto_por_ejercer_mxn") is not None
+        else budget - investment
+    )
+    progress = round(
+        100.0 * float(general_row.get("avance_presupuesto") or 0), 2
+    ) if general else (round(100.0 * investment / budget, 2) if budget else 0.0)
     period = cutoff.strftime("%Y-%m")
     return {
         "data_kind": "eic_administrative",
@@ -477,6 +486,7 @@ def build_eic_dashboard_dataset(
         "courses": sorted({str(row["curso"]) for row in metrics}),
         "metrics": metrics,
         "views": {
+            "general": general,
             "c_level": c_level,
             "directions": directions,
             "initiatives": initiatives,
@@ -490,7 +500,7 @@ def build_eic_dashboard_dataset(
         "pending_rows": [],
         "detail_rows": [],
         "eic_views": [
-            "c_level", "directions", "initiatives", "quotation_status",
+            "general", "c_level", "directions", "initiatives", "quotation_status",
             "training_status", "payment_status", "training_groups", "payments",
             "controls",
         ],

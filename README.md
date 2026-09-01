@@ -2,6 +2,8 @@
 
 Aplicación web para cargar archivos Excel/CSV con nombres estandarizados, convertirlos en tablas temporales y ejecutar una consulta SQL de solo lectura.
 
+Para operar la aplicación paso a paso consulta el [Manual de usuario](MANUAL_DE_USUARIO.md).
+
 ## Arquitectura
 
 - **Frontend:** React, TypeScript y Vite.
