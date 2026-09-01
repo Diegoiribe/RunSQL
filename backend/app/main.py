@@ -32,6 +32,7 @@ from .firebase_publish import (
     category_from_filename,
     decode_tabular_payload,
     publish_dashboard,
+    slugify,
     validate_cutoff_date,
 )
 
@@ -342,6 +343,8 @@ def dashboard_categories() -> list[dict]:
                 {
                     "key": snapshot.id,
                     "label": str(data.get("category_label") or snapshot.id),
+                    "collectionKey": data.get("collection_key"),
+                    "collectionLabel": data.get("collection_label"),
                     "history": data.get("periods") or {},
                 }
             )
@@ -562,6 +565,8 @@ async def execute(
     preview_limit: int = Form(100),
     cutoff_date: str = Form(""),
     publish_to_firebase: bool = Form(False),
+    publication_name: str = Form(""),
+    collection_link: str = Form(""),
 ) -> dict:
     if not isinstance(sql_filename, str):
         sql_filename = "consulta.sql"
@@ -575,9 +580,19 @@ async def execute(
         cutoff_date = ""
     if not isinstance(publish_to_firebase, bool):
         publish_to_firebase = False
+    if not isinstance(publication_name, str):
+        publication_name = ""
+    if not isinstance(collection_link, str):
+        collection_link = ""
     preview_table = preview_table.strip()
     cutoff_date = cutoff_date.strip()
+    publication_name = publication_name.strip()
+    collection_link = collection_link.strip()
     preview_limit = max(1, min(preview_limit, 1_000))
+    if len(publication_name) > 120:
+        raise HTTPException(status_code=400, detail="--n admite hasta 120 caracteres.")
+    if len(collection_link) > 120:
+        raise HTTPException(status_code=400, detail="--l admite hasta 120 caracteres.")
     if preview_table and not re.fullmatch(r"[a-zA-Z_][a-zA-Z0-9_]*", preview_table):
         raise HTTPException(status_code=400, detail="El nombre de la tabla para preview no es válido.")
     if publish_to_firebase and not cutoff_date:
@@ -751,17 +766,35 @@ async def execute(
             records = records[:preview_limit]
         firebase_result = None
         if publish_to_firebase:
-            category, category_label = category_from_filename(sql_filename)
+            source_category, default_category_label = category_from_filename(sql_filename)
+            category, category_label = category_from_filename(
+                publication_name or sql_filename
+            )
+            collection_key = slugify(collection_link) if collection_link else None
+            if not category:
+                raise HTTPException(
+                    status_code=400,
+                    detail="--n debe contener al menos una letra o un número.",
+                )
+            if collection_link and not collection_key:
+                raise HTTPException(
+                    status_code=400,
+                    detail="--l debe contener al menos una letra o un número.",
+                )
             try:
                 cutoff = validate_cutoff_date(cutoff_date)
-                if category == "encuesta_de_satisfaccion":
+                if source_category == "encuesta_de_satisfaccion":
                     dataset = build_satisfaction_dashboard_dataset(
-                        connection, category, category_label, cutoff
+                        connection, source_category, default_category_label, cutoff
                     )
                 else:
                     dataset = build_dashboard_dataset(
-                        connection, category, category_label, cutoff
+                        connection, source_category, default_category_label, cutoff
                     )
+                dataset["category"] = category
+                dataset["category_label"] = category_label
+                dataset["collection_key"] = collection_key
+                dataset["collection_label"] = collection_link or None
                 firebase_result = publish_dashboard(dataset)
             except FirebaseConfigurationError as error:
                 raise HTTPException(status_code=503, detail=str(error)) from error

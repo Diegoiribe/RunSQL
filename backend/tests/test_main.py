@@ -594,6 +594,46 @@ class RunSqlTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["columns"], [])
         self.assertEqual(result["firebase_publish"], publication)
 
+    async def test_publication_name_and_collection_do_not_change_source_table(self):
+        files = [
+            UploadFile(io.BytesIO(b"persona,curso\n1,SQL\n"), filename="Almacenista P1.csv"),
+            *self.required_files(),
+        ]
+        sql = """
+        CREATE OR REPLACE TABLE parametros_almacenista AS
+        SELECT DATE '2026-07-30' AS fecha_corte;
+        CREATE OR REPLACE TABLE resultados_capacitacion_almacenista AS
+        SELECT
+            1 AS numero_persona, 'Ana' AS nombre,
+            'Almacenista' AS nombre_puesto, '1' AS region,
+            'Curso A' AS curso, 'No' AS iniciativa,
+            1 AS completados, 1 AS total, '10' AS tienda;
+        """
+        publication = {
+            "project_id": "capacitaciones-api",
+            "period": "2026-08",
+            "category": "eic_presupuesto",
+            "metric_rows": 1,
+            "pending_rows": 0,
+        }
+        with patch("app.main.publish_dashboard", return_value=publication) as publish:
+            await execute(
+                sql=sql,
+                files=files,
+                sql_filename="Almacenista.sql",
+                rules_sql=RULES_SQL,
+                cutoff_date="2026-08-31",
+                publish_to_firebase=True,
+                publication_name="EIC Presupuesto",
+                collection_link="Administración EIC",
+            )
+
+        dataset = publish.call_args.args[0]
+        self.assertEqual(dataset["category"], "eic_presupuesto")
+        self.assertEqual(dataset["category_label"], "EIC Presupuesto")
+        self.assertEqual(dataset["collection_key"], "administracion_eic")
+        self.assertEqual(dataset["collection_label"], "Administración EIC")
+
     async def test_preview_generated_table(self):
         files = [
             UploadFile(io.BytesIO(b"persona,curso\n2,React\n1,SQL\n"), filename="Almacenista P1.csv"),

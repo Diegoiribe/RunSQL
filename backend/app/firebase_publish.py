@@ -737,6 +737,8 @@ def _publish_dashboard(dataset: dict) -> dict:
         {
             "category": dataset["category"],
             "category_label": dataset["category_label"],
+            "collection_key": dataset.get("collection_key"),
+            "collection_label": dataset.get("collection_label"),
             "periods": {
                 dataset["period"]: {
                     "cutoff_date": dataset["cutoff_date"],
@@ -757,6 +759,9 @@ def _publish_dashboard(dataset: dict) -> dict:
         "project_id": FIREBASE_PROJECT_ID,
         "period": dataset["period"],
         "category": dataset["category"],
+        "category_label": dataset["category_label"],
+        "collection_key": dataset.get("collection_key"),
+        "collection_label": dataset.get("collection_label"),
         "cutoff_date": dataset["cutoff_date"],
         "replaced_existing": replaced_existing,
         "same_cutoff_replacement": same_cutoff_replacement,

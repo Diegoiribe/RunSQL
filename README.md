@@ -131,6 +131,20 @@ usa esa fecha como corte del SQL, ejecuta el proceso cargado y publica en Cloud
 Firestore. El nombre del SQL determina la categoría (`Asesor.sql` publica
 `asesor`, `Gerente Zona.sql` publica `gerente_zona`, etcétera).
 
+El nombre público y la colección se pueden indicar sin renombrar el SQL:
+
+```text
+start --d(2026-07-30) --n(EIC Presupuesto) --l(EIC)
+```
+
+- `--n(nombre)` define el nombre visible y la clave independiente del reporte.
+- `--l(colección)` lo vincula mediante metadatos con una colección existente.
+- Las opciones pueden escribirse en cualquier orden. `--d(...)` continúa siendo
+  obligatorio; `--n(...)` y `--l(...)` son opcionales.
+
+El vínculo no reemplaza la colección: cada reporte conserva su propio documento
+y DataStore puede agrupar todos los que compartan `collection_key`.
+
 La configuración web de Firebase identifica el proyecto, pero no concede al
 backend permiso para escribir. Para publicar de forma segura:
 

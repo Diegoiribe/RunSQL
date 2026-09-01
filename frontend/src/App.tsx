@@ -50,6 +50,9 @@ type ExecutionResult = {
     project_id: string;
     period: string;
     category: string;
+    category_label: string;
+    collection_key: string | null;
+    collection_label: string | null;
     cutoff_date: string;
     replaced_existing: boolean;
     same_cutoff_replacement: boolean;
@@ -468,7 +471,7 @@ export default function App() {
   async function execute(
     statementOverride?: string,
     preview?: { table: string; limit: number },
-    publish?: { cutoffDate: string }
+    publish?: { cutoffDate: string; name?: string; collectionLink?: string }
   ) {
     const statement = statementOverride ?? sql;
     const unassignedFiles = Object.entries(uploads)
@@ -521,6 +524,9 @@ export default function App() {
     if (publish) {
       body.append('cutoff_date', publish.cutoffDate);
       body.append('publish_to_firebase', 'true');
+      if (publish.name) body.append('publication_name', publish.name);
+      if (publish.collectionLink)
+        body.append('collection_link', publish.collectionLink);
     }
     Object.values(uploads).forEach((file) => body.append('files', file));
     try {
@@ -534,7 +540,7 @@ export default function App() {
       setResult(payload);
       const duration = Date.now() - startedAt;
       const outputMessage = payload.firebase_publish
-        ? `${payload.firebase_publish.replaced_existing ? 'Corte reemplazado' : 'Corte publicado'}: ${payload.firebase_publish.metric_rows.toLocaleString()} indicadores y ${payload.firebase_publish.pending_rows.toLocaleString()} pendientes indexados`
+        ? `${payload.firebase_publish.replaced_existing ? 'Corte reemplazado' : 'Corte publicado'}: ${payload.firebase_publish.category_label}${payload.firebase_publish.collection_label ? ` · colección ${payload.firebase_publish.collection_label}` : ''} · ${payload.firebase_publish.metric_rows.toLocaleString()} indicadores y ${payload.firebase_publish.pending_rows.toLocaleString()} pendientes indexados`
         : payload.output_files?.length
         ? `${payload.output_files.length} archivo(s) Excel generado(s)`
         : `${payload.row_count.toLocaleString()} filas obtenidas`;
@@ -641,13 +647,29 @@ export default function App() {
     if (command === 'upload') {
       sqlFileRef.current?.click();
     } else if (/^start\b/i.test(rawCommand)) {
-      const startMatch = rawCommand.match(
-        /^start\s+--d\((\d{4}-\d{2}-\d{2})\)$/i
-      );
-      if (!startMatch) {
+      const optionMatches = [
+        ...rawCommand.matchAll(/--([dnl])\(([^()]*)\)/gi)
+      ];
+      const residue = rawCommand
+        .replace(/^start\b/i, '')
+        .replace(/--[dnl]\([^()]*\)/gi, '')
+        .trim();
+      const options = new Map<string, string>();
+      let optionError = residue ? `opción no reconocida: ${residue}` : '';
+      for (const match of optionMatches) {
+        const key = match[1].toLowerCase();
+        const value = match[2].trim();
+        if (options.has(key)) optionError = `la opción --${key} está repetida`;
+        else if (!value) optionError = `la opción --${key} no puede estar vacía`;
+        options.set(key, value);
+      }
+      const cutoffDate = options.get('d') ?? '';
+      if (!optionError && !/^\d{4}-\d{2}-\d{2}$/.test(cutoffDate))
+        optionError = 'falta --d(AAAA-MM-DD)';
+      if (optionError) {
         setTerminalLines((lines) => [
           ...lines,
-          'error: usa start --d(AAAA-MM-DD); ejemplo: start --d(2026-07-30)'
+          `error: ${optionError}. Ejemplo: start --d(2026-07-30) --n(EIC Presupuesto) --l(EIC)`
         ]);
         return;
       }
@@ -661,12 +683,17 @@ export default function App() {
           ...lines,
           'la consulta ya se está ejecutando'
         ]);
-      else void execute(undefined, undefined, { cutoffDate: startMatch[1] });
+      else
+        void execute(undefined, undefined, {
+          cutoffDate,
+          name: options.get('n'),
+          collectionLink: options.get('l')
+        });
     } else if (command === 'help') {
       setTerminalLines((lines) => [
         ...lines,
         'upload                    abrir un archivo SQL',
-        'start --d(AAAA-MM-DD)     ejecutar y publicar el corte en Firebase',
+        'start --d(fecha) [--n(nombre)] [--l(colección)]',
         'show tables               listar tablas generadas',
         'show <tabla> limit <x>     previsualizar y ordenar una tabla',
         'SELECT / WITH              ejecutar una consulta',
