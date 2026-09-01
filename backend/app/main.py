@@ -177,6 +177,15 @@ def without_sql_comments(statement: str) -> str:
     return re.sub(r"/\*.*?\*/|--[^\n]*", " ", statement, flags=re.DOTALL).strip()
 
 
+def normalize_quoted_identifiers(statement: str) -> str:
+    """Match Excel headers regardless of line breaks or repeated spaces."""
+    return re.sub(
+        r'"((?:""|[^"])*)"',
+        lambda match: '"' + re.sub(r"\s+", " ", match.group(1)).strip() + '"',
+        statement,
+    )
+
+
 def prepare_statements(
     sql: str,
     definitions: tuple[FileDefinition, ...] = FILE_CATALOG,
@@ -227,7 +236,7 @@ def prepare_statements(
                 status_code=400,
                 detail="El archivo SQL intenta acceder a archivos o modificar datos fuera del proceso permitido.",
             )
-        prepared.append((statement, is_query))
+        prepared.append((normalize_quoted_identifiers(statement), is_query))
 
     if not prepared:
         raise HTTPException(status_code=400, detail="El archivo SQL no contiene instrucciones ejecutables.")
@@ -300,7 +309,7 @@ def read_dataframe(
                 usecols=usecols,
             )
         dataframe.columns = [
-            column.strip() if isinstance(column, str) else column
+            re.sub(r"\s+", " ", column).strip() if isinstance(column, str) else column
             for column in dataframe.columns
         ]
         return dataframe

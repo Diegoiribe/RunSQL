@@ -19,7 +19,7 @@ from app.firebase_publish import (
     decode_tabular_payload,
     result_table_name,
 )
-from app.main import execute, match_definition, match_family, prepare_exports, prepare_statements, split_sql_script, validate_sql
+from app.main import execute, match_definition, match_family, normalize_quoted_identifiers, prepare_exports, prepare_statements, split_sql_script, validate_sql
 
 RULES_SQL = """
 -- La aplicación registra almacenista_p.
@@ -133,6 +133,13 @@ class RunSqlTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(match_definition("7 Datos Tiendas Julio 2026.xlsx").key, "datos_tiendas_almacenista")
         self.assertEqual(match_definition("Bodeguita _ Detalle Colaborador (10).xlsx").key, "almacenista_detalle")
         self.assertIsNone(match_definition("archivo desconocido.xlsx"))
+
+    def test_multiline_excel_identifiers_are_normalized(self):
+        statement = 'SELECT "Datos de Pax Reales\n(Se obtiene desde Tabla Listas)" FROM "Capacitaciones  EIC"'
+        self.assertEqual(
+            normalize_quoted_identifiers(statement),
+            'SELECT "Datos de Pax Reales (Se obtiene desde Tabla Listas)" FROM "Capacitaciones EIC"',
+        )
 
     def test_firestore_tabular_payload_does_not_nest_arrays(self):
         payload = _tabular_payload(
