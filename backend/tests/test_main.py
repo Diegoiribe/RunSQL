@@ -188,6 +188,12 @@ class RunSqlTests(unittest.IsolatedAsyncioTestCase):
             CREATE TABLE eic_estatus_capacitaciones_direccion AS SELECT 1 AS registros;
             CREATE TABLE eic_estatus_pagos_direccion AS SELECT 1 AS registros;
             CREATE TABLE eic_capacitaciones AS SELECT 'EIC-1' AS identificador;
+            CREATE TABLE eic_participantes_capacitacion AS SELECT '90000001' AS numero_colaborador;
+            CREATE TABLE eic_solicitados_plan_autorizado AS SELECT 1 AS dncs;
+            CREATE TABLE eic_distribucion_clusters AS SELECT 'Hasta $10,000' AS cluster;
+            CREATE TABLE eic_distribucion_modalidad AS SELECT 'Online' AS modalidad;
+            CREATE TABLE eic_presupuesto_categoria AS SELECT 'Curso' AS categoria;
+            CREATE TABLE eic_ranking_colaborador AS SELECT 'Ana' AS colaborador;
             CREATE TABLE eic_pagos AS SELECT 'EIC-1' AS identificador;
             CREATE TABLE eic_controles AS SELECT 'PASS' AS estatus;
         """)
@@ -203,6 +209,7 @@ class RunSqlTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(dataset["metrics"][0]["completados"], 1)
         self.assertEqual(len(dataset["views"]["initiatives"]), 1)
         self.assertEqual(len(dataset["views"]["payments"]), 1)
+        self.assertEqual(dataset["views"]["collaborator_ranking"][0]["colaborador"], "Ana")
 
     def test_dynamic_rules_ignore_case_and_accents(self):
         definitions, families = build_catalog(RULES_SQL, "ALMACÉNISTA.sql")
@@ -799,6 +806,39 @@ class RunSqlTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(dataset["collection_key"], "administracion_eic")
         self.assertEqual(dataset["collection_label"], "Administración EIC")
         self.assertEqual(dataset["report_type"], "c")
+
+    async def test_replacement_name_keeps_existing_key_and_changes_visible_label(self):
+        files = [
+            UploadFile(io.BytesIO(b"persona,curso\n1,SQL\n"), filename="Almacenista P1.csv"),
+            *self.required_files(),
+        ]
+        sql = """
+        CREATE OR REPLACE TABLE parametros_almacenista AS
+        SELECT DATE '2026-07-30' AS fecha_corte;
+        CREATE OR REPLACE TABLE resultados_capacitacion_almacenista AS
+        SELECT 1 AS numero_persona, 'Ana' AS nombre, 'Almacenista' AS nombre_puesto,
+               '1' AS region, 'Curso A' AS curso, 'No' AS iniciativa,
+               1 AS completados, 1 AS total, '10' AS tienda;
+        """
+        publication = {"project_id": "capacitaciones-api", "period": "2026-08"}
+        with patch("app.main.publish_dashboard", return_value=publication) as publish:
+            await execute(
+                sql=sql,
+                files=files,
+                sql_filename="Almacenista.sql",
+                rules_sql=RULES_SQL,
+                cutoff_date="2026-08-31",
+                publish_to_firebase=True,
+                publication_name="Dirección de Administración GC",
+                replacement_name="Estatus planes de capacitación",
+                collection_link="Planes de capacitación",
+                report_type="c",
+            )
+
+        dataset = publish.call_args.args[0]
+        self.assertEqual(dataset["category"], "estatus_planes_de_capacitacion")
+        self.assertEqual(dataset["category_label"], "Dirección de Administración GC")
+        self.assertEqual(dataset["collection_key"], "planes_de_capacitacion")
 
     async def test_preview_generated_table(self):
         files = [

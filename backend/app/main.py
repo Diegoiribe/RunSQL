@@ -631,6 +631,7 @@ async def execute(
     cutoff_date: str = Form(""),
     publish_to_firebase: bool = Form(False),
     publication_name: str = Form(""),
+    replacement_name: str = Form(""),
     collection_link: str = Form(""),
     report_type: str = Form(""),
 ) -> dict:
@@ -648,6 +649,8 @@ async def execute(
         publish_to_firebase = False
     if not isinstance(publication_name, str):
         publication_name = ""
+    if not isinstance(replacement_name, str):
+        replacement_name = ""
     if not isinstance(collection_link, str):
         collection_link = ""
     if not isinstance(report_type, str):
@@ -655,11 +658,14 @@ async def execute(
     preview_table = preview_table.strip()
     cutoff_date = cutoff_date.strip()
     publication_name = publication_name.strip()
+    replacement_name = replacement_name.strip()
     collection_link = collection_link.strip()
     report_type = report_type.strip().lower()
     preview_limit = max(1, min(preview_limit, 1_000))
     if len(publication_name) > 120:
         raise HTTPException(status_code=400, detail="--n admite hasta 120 caracteres.")
+    if len(replacement_name) > 120:
+        raise HTTPException(status_code=400, detail="El nombre actual de --n admite hasta 120 caracteres.")
     if len(collection_link) > 120:
         raise HTTPException(status_code=400, detail="--l admite hasta 120 caracteres.")
     if report_type not in {"", "c", "s", "e"}:
@@ -850,8 +856,10 @@ async def execute(
         firebase_result = None
         if publish_to_firebase:
             category, category_label = category_from_filename(
-                publication_name or sql_filename
+                replacement_name or publication_name or sql_filename
             )
+            if publication_name:
+                _, category_label = category_from_filename(publication_name)
             collection_key = slugify(collection_link) if collection_link else None
             if not category:
                 raise HTTPException(

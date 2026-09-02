@@ -140,6 +140,8 @@ start --d(2026-07-30) --t(e) --n(EIC Presupuesto) --l(Staff)
 ```
 
 - `--n(nombre)` define el nombre visible y la clave independiente del reporte.
+- `--n(nombre actual, nombre nuevo)` reemplaza la categoría existente identificada
+  por el nombre actual y, después de publicar, la muestra con el nombre nuevo.
 - `--l(colección)` lo vincula mediante metadatos con una colección existente.
 - `--t(tipo)` selecciona la estructura: `c` para capacitación, `s` para encuesta
   de satisfacción y `e` para estatus administrativo EIC.

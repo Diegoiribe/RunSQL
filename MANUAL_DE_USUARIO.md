@@ -104,6 +104,7 @@ Las opciones pueden escribirse en cualquier orden.
 | `--d(fecha)` | Sí | Fecha de corte en formato `AAAA-MM-DD`. | `--d(2026-08-31)` |
 | `--t(tipo)` | Recomendado | Estructura del reporte: `c`, `s` o `e`. | `--t(e)` |
 | `--n(nombre)` | No | Nombre visible del reporte en DataStore. | `--n(Estatus planes de capacitación)` |
+| `--n(nombre actual, nombre nuevo)` | No | Reemplaza el reporte actual y cambia su nombre visible sin crear un duplicado. | `--n(Estatus planes de capacitación, Dirección de Administración GC)` |
 | `--l(colección)` | No | Colección en la que aparecerá como capítulo o pestaña. | `--l(Staff)` |
 
 ### Tipos de reporte

@@ -450,6 +450,12 @@ def build_eic_dashboard_dataset(
         "eic_estatus_capacitaciones_direccion",
         "eic_estatus_pagos_direccion",
         "eic_capacitaciones",
+        "eic_participantes_capacitacion",
+        "eic_solicitados_plan_autorizado",
+        "eic_distribucion_clusters",
+        "eic_distribucion_modalidad",
+        "eic_presupuesto_categoria",
+        "eic_ranking_colaborador",
         "eic_pagos",
         "eic_controles",
     }
@@ -530,6 +536,12 @@ def build_eic_dashboard_dataset(
             "training_status": table_rows("eic_estatus_capacitaciones_direccion"),
             "payment_status": table_rows("eic_estatus_pagos_direccion"),
             "training_groups": table_rows("eic_capacitaciones"),
+            "participants": table_rows("eic_participantes_capacitacion"),
+            "authorized_plan": table_rows("eic_solicitados_plan_autorizado"),
+            "cluster_distribution": table_rows("eic_distribucion_clusters"),
+            "modality_distribution": table_rows("eic_distribucion_modalidad"),
+            "budget_categories": table_rows("eic_presupuesto_categoria"),
+            "collaborator_ranking": table_rows("eic_ranking_colaborador"),
             "payments": table_rows("eic_pagos"),
             "controls": table_rows("eic_controles"),
         },
@@ -537,8 +549,9 @@ def build_eic_dashboard_dataset(
         "detail_rows": [],
         "eic_views": [
             "general", "c_level", "directions", "initiatives", "quotation_status",
-            "training_status", "payment_status", "training_groups", "payments",
-            "controls",
+            "training_status", "payment_status", "training_groups", "participants",
+            "authorized_plan", "cluster_distribution", "modality_distribution",
+            "budget_categories", "collaborator_ranking", "payments", "controls",
         ],
     }
 

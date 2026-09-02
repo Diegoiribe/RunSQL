@@ -471,7 +471,7 @@ export default function App() {
   async function execute(
     statementOverride?: string,
     preview?: { table: string; limit: number },
-    publish?: { cutoffDate: string; name?: string; collectionLink?: string; reportType?: string }
+    publish?: { cutoffDate: string; name?: string; replacementName?: string; collectionLink?: string; reportType?: string }
   ) {
     const statement = statementOverride ?? sql;
     const unassignedFiles = Object.entries(uploads)
@@ -525,6 +525,8 @@ export default function App() {
       body.append('cutoff_date', publish.cutoffDate);
       body.append('publish_to_firebase', 'true');
       if (publish.name) body.append('publication_name', publish.name);
+      if (publish.replacementName)
+        body.append('replacement_name', publish.replacementName);
       if (publish.collectionLink)
         body.append('collection_link', publish.collectionLink);
       if (publish.reportType) body.append('report_type', publish.reportType);
@@ -670,6 +672,12 @@ export default function App() {
       const reportType = (options.get('t') ?? '').toLowerCase();
       if (!optionError && reportType && !['c', 's', 'e'].includes(reportType))
         optionError = '--t solo admite c, s o e';
+      const rawName = options.get('n') ?? '';
+      const commaIndex = rawName.indexOf(',');
+      const replacementName = commaIndex >= 0 ? rawName.slice(0, commaIndex).trim() : '';
+      const publicationName = commaIndex >= 0 ? rawName.slice(commaIndex + 1).trim() : rawName;
+      if (!optionError && commaIndex >= 0 && (!replacementName || !publicationName))
+        optionError = '--n(nombre actual, nombre nuevo) requiere los dos nombres';
       if (optionError) {
         setTerminalLines((lines) => [
           ...lines,
@@ -690,7 +698,8 @@ export default function App() {
       else
         void execute(undefined, undefined, {
           cutoffDate,
-          name: options.get('n'),
+          name: publicationName || undefined,
+          replacementName: replacementName || undefined,
           collectionLink: options.get('l'),
           reportType: reportType || undefined
         });
@@ -698,7 +707,7 @@ export default function App() {
       setTerminalLines((lines) => [
         ...lines,
         'upload                    abrir un archivo SQL',
-        'start --d(fecha) [--t(c|s|e)] [--n(nombre)] [--l(colección)]',
+        'start --d(fecha) [--t(c|s|e)] [--n(nombre) | --n(nombre actual, nombre nuevo)] [--l(colección)]',
         'show tables               listar tablas generadas',
         'show <tabla> limit <x>     previsualizar y ordenar una tabla',
         'SELECT / WITH              ejecutar una consulta',
