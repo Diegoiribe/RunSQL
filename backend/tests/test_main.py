@@ -11,6 +11,7 @@ from starlette.datastructures import UploadFile
 
 from app.catalog import build_catalog, definition_targets
 from app.firebase_publish import (
+    _build_comment_details,
     _comment_labels,
     _is_substantive_comment,
     _proposal_for,
@@ -336,6 +337,27 @@ class RunSqlTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(opportunity["proposal"])
         self.assertEqual(sum(row["comentarios"] for row in dataset["metrics"]), 2)
         connection.close()
+
+    def test_comment_details_preserve_every_comment_in_the_same_scope(self):
+        rows = [
+            {
+                "fecha": date(2026, 8, day),
+                "programa": "HAMI",
+                "curso": "HAMI",
+                "instructor": "Ana",
+                "region": "Norte",
+                "recomendacion": 10,
+                "comentario": f"Excelente explicación número {day}",
+            }
+            for day in range(1, 7)
+        ]
+
+        details = _build_comment_details(rows)
+
+        comments = [row for row in details if row["record_type"] == "comment"]
+        themes = [row for row in details if row["record_type"] == "theme"]
+        self.assertEqual(len(comments), 6)
+        self.assertEqual(sum(row["count"] for row in themes), 6)
 
     def test_comment_sentiment_does_not_confuse_improvement_with_an_opportunity(self):
         self.assertEqual(

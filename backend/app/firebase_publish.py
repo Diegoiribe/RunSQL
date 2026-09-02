@@ -316,7 +316,6 @@ def _proposal_for(theme: str, sentiment: str) -> str | None:
 def _build_comment_details(rows: list[dict]) -> list[dict]:
     aggregates: dict[tuple, dict] = {}
     recent: list[dict] = []
-    recent_per_scope: dict[tuple, int] = {}
     for row in rows:
         comment = str(row.get("comentario") or "").strip()
         if not _is_substantive_comment(comment):
@@ -324,10 +323,10 @@ def _build_comment_details(rows: list[dict]) -> list[dict]:
         theme, sentiment = _comment_labels(comment)
         proposal = _proposal_for(theme, sentiment)
         month = str(row.get("fecha") or "")[:7]
-        scope = (
-            month, row["programa"], row["curso"], row["instructor"], row["region"],
+        dimensions = (
+            month, row["programa"], row["curso"], row["instructor"],
+            row["region"], sentiment, theme,
         )
-        dimensions = (*scope, sentiment, theme)
         item = aggregates.setdefault(
             dimensions,
             {
@@ -340,18 +339,16 @@ def _build_comment_details(rows: list[dict]) -> list[dict]:
             },
         )
         item["count"] += 1
-        if recent_per_scope.get(scope, 0) < 4:
-            recent.append(
-                {
-                    "record_type": "comment", "fecha": row["fecha"], "mes": month,
-                    "programa": row["programa"], "curso": row["curso"],
-                    "instructor": row["instructor"], "region": row["region"],
-                    "recomendacion": row["recomendacion"], "sentiment": sentiment,
-                    "theme": theme, "count": 1, "comentario": comment,
-                    "example": comment, "proposal": proposal,
-                }
-            )
-            recent_per_scope[scope] = recent_per_scope.get(scope, 0) + 1
+        recent.append(
+            {
+                "record_type": "comment", "fecha": row["fecha"], "mes": month,
+                "programa": row["programa"], "curso": row["curso"],
+                "instructor": row["instructor"], "region": row["region"],
+                "recomendacion": row["recomendacion"], "sentiment": sentiment,
+                "theme": theme, "count": 1, "comentario": comment,
+                "example": comment, "proposal": proposal,
+            }
+        )
     themes = sorted(aggregates.values(), key=lambda item: (-item["count"], item["theme"]))
     return themes + recent
 
