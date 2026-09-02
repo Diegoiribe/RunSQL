@@ -11,6 +11,7 @@ from starlette.datastructures import UploadFile
 from app.catalog import build_catalog, definition_targets
 from app.firebase_publish import (
     _comment_labels,
+    _is_substantive_comment,
     _publish_dashboard,
     _safe,
     _tabular_payload,
@@ -329,6 +330,7 @@ class RunSqlTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(
             any(row["record_type"] == "theme" for row in dataset["detail_rows"])
         )
+        self.assertEqual(sum(row["comentarios"] for row in dataset["metrics"]), 2)
         connection.close()
 
     def test_comment_sentiment_does_not_confuse_improvement_with_an_opportunity(self):
@@ -364,6 +366,10 @@ class RunSqlTests(unittest.IsolatedAsyncioTestCase):
             _comment_labels("El curso fue bueno, pero el equipo no funciona.")[1],
             "negative",
         )
+        self.assertEqual(_comment_labels("No fue bueno ni claro.")[1], "negative")
+        self.assertTrue(_is_substantive_comment("Excelente explicación"))
+        self.assertFalse(_is_substantive_comment("No tengo comentarios"))
+        self.assertFalse(_is_substantive_comment("Sin comentarios"))
 
     def test_staff_catalog_accepts_confidential_demographics_and_periods(self):
         rules_sql = """

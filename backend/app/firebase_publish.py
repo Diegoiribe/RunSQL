@@ -228,12 +228,15 @@ COMMENT_THEMES = (
     ("Duración y ritmo", ("tiempo", "duracion", "rapido", "lento", "ritmo")),
     ("Modalidad", ("presencial", "virtual", "linea", "remoto")),
 )
-POSITIVE_COMMENT_WORDS = (
-    "excelente", "bueno", "muy bien", "claro", "dinamic", "practic", "agradable",
-    "gracias", "recomiendo", "felicidades", "aprendi", "util", "ameno",
-    "amena", "participativo", "participativa", "gran talento", "ideal",
-    "conocedor", "dominio", "atento", "atenta", "entusiasmad", "me agrado",
-    "mejor forma", "agradec", "buen ", "carisma", "inspira", "confianza",
+POSITIVE_COMMENT_PATTERNS = (
+    r"\bexcelente(?:s)?\b", r"\bmuy bien\b", r"\bbuen(?:o|a|os|as)?\b",
+    r"\bclar[oa]s?\b", r"\bdinamic[oa]s?\b", r"\bpractic[oa]s?\b",
+    r"\bagradable\b", r"\bgracias\b", r"\brecomiendo\b", r"\bfelicidades\b",
+    r"\baprendi\b", r"\butil(?:es)?\b", r"\bamen[oa]s?\b",
+    r"\bparticipativ[oa]s?\b", r"\bgran talento\b", r"\bideal\b",
+    r"\bconocedor(?:a|es)?\b", r"\bdominio\b", r"\batent[oa]s?\b",
+    r"\bentusiasmad[oa]s?\b", r"\bme agrado\b", r"\bmejor forma\b",
+    r"\bagradec", r"\bcarisma\b", r"\binspira\b", r"\bconfianza\b",
 )
 NEGATIVE_COMMENT_PATTERNS = (
     r"\bfalta(?:n|ba)?\b", r"\bhace falta\b",
@@ -246,10 +249,15 @@ NEGATIVE_COMMENT_PATTERNS = (
     r"\bpoco tiempo\b", r"\bmas practica\b",
     r"\bpuede(?:n)? mejorar\b", r"\bpodria(?:n)? mejorar\b", r"\bmas equipos?\b",
     r"\bmejorar (?:el|la|los|las) (?:equipo|equipos|material|materiales|instalacion|instalaciones|contenido|curso|audio|computadora|computadoras)\b",
-    r"\bno (?:fue|es|esta|estuvo|me parecio )?(?:bueno|claro|util|dinamic[oa]|practic[oa]|ameno|amena)\b",
+    r"\bno (?:fue |es |esta |estuvo |me parecio )?(?:bueno|claro|util|dinamic[oa]|practic[oa]|ameno|amena)\b",
     r"\bno (?:explica|comunica|funciona|ayuda|resuelve|cumple)\b",
     r"\bnunca (?:explica|comunica|resuelve|contesta|ayuda)\b",
     r"\bdificil de (?:entender|seguir|comprender)\b",
+)
+NON_COMMENT_PATTERNS = (
+    r"^(?:no|ningun[oa]?|n/?a|no aplica|sin comentarios?|ningun comentario)$",
+    r"^(?:no tengo|no hay|ningun[oa]?)(?: ningun[oa]?)? comentarios?$",
+    r"^(?:sin|ningun[oa]?) comentario adicional$",
 )
 
 
@@ -259,13 +267,20 @@ def _comment_key(value: str) -> str:
     return re.sub(r"\s+", " ", normalized.lower()).strip()
 
 
+def _is_substantive_comment(value: str) -> bool:
+    normalized = _comment_key(value).strip(" .,:;!?-")
+    return len(normalized) >= 4 and not any(
+        re.fullmatch(pattern, normalized) for pattern in NON_COMMENT_PATTERNS
+    )
+
+
 def _comment_labels(value: str) -> tuple[str, str]:
     normalized = _comment_key(value)
     theme = next(
         (label for label, words in COMMENT_THEMES if any(word in normalized for word in words)),
         "Comentario general",
     )
-    positive_score = sum(word in normalized for word in POSITIVE_COMMENT_WORDS)
+    positive_score = sum(bool(re.search(pattern, normalized)) for pattern in POSITIVE_COMMENT_PATTERNS)
     negative_score = sum(bool(re.search(pattern, normalized)) for pattern in NEGATIVE_COMMENT_PATTERNS)
     if negative_score:
         sentiment = "negative"
@@ -283,14 +298,17 @@ def _comment_labels(value: str) -> tuple[str, str]:
 def _build_comment_details(rows: list[dict]) -> list[dict]:
     aggregates: dict[tuple, dict] = {}
     recent: list[dict] = []
+    recent_per_scope: dict[tuple, int] = {}
     for row in rows:
         comment = str(row.get("comentario") or "").strip()
+        if not _is_substantive_comment(comment):
+            continue
         theme, sentiment = _comment_labels(comment)
         month = str(row.get("fecha") or "")[:7]
-        dimensions = (
-            month, row["programa"], row["curso"], row["instructor"],
-            row["region"], sentiment, theme,
+        scope = (
+            month, row["programa"], row["curso"], row["instructor"], row["region"],
         )
+        dimensions = (*scope, sentiment, theme)
         item = aggregates.setdefault(
             dimensions,
             {
@@ -302,7 +320,7 @@ def _build_comment_details(rows: list[dict]) -> list[dict]:
             },
         )
         item["count"] += 1
-        if len(recent) < 1500:
+        if recent_per_scope.get(scope, 0) < 4:
             recent.append(
                 {
                     "record_type": "comment", "fecha": row["fecha"], "mes": month,
@@ -313,6 +331,7 @@ def _build_comment_details(rows: list[dict]) -> list[dict]:
                     "example": comment,
                 }
             )
+            recent_per_scope[scope] = recent_per_scope.get(scope, 0) + 1
     themes = sorted(aggregates.values(), key=lambda item: (-item["count"], item["theme"]))
     return themes + recent
 
@@ -575,8 +594,8 @@ def build_satisfaction_dashboard_dataset(
     score_fives = sum(int(row["respuestas_cinco"]) for row in metrics)
     isa = round(100.0 * rubric_sum / (5 * rubric_count), 2) if rubric_count else 0.0
     nps = round(100.0 * (promoters - detractors) / nps_valid, 2) if nps_valid else 0.0
-    raw_comments = list(
-        _records(
+    raw_comments = [
+        row for row in _records(
             connection.execute(
                 f"""
                 SELECT fecha::DATE AS fecha,
@@ -587,13 +606,23 @@ def build_satisfaction_dashboard_dataset(
                        recomendacion, TRIM(comentario) AS comentario
                 FROM "{quoted_table}"
                 WHERE fecha IS NOT NULL AND fecha::DATE <= DATE '{cutoff_text}'
-                  AND comentario IS NOT NULL AND LENGTH(TRIM(comentario)) >= 4
-                  AND LOWER(TRIM(comentario)) NOT IN ('ninguno', 'ninguna', 'no aplica', 'n/a')
+                  AND comentario IS NOT NULL
                 ORDER BY fecha DESC
                 """
             )
         )
-    )
+        if _is_substantive_comment(str(row.get("comentario") or ""))
+    ]
+    comment_counts: dict[tuple, int] = {}
+    for row in raw_comments:
+        key = (
+            str(row["fecha"])[:7], row["programa"], row["curso"],
+            row["instructor"], row["region"],
+        )
+        comment_counts[key] = comment_counts.get(key, 0) + 1
+    for row in metrics:
+        key = (row["mes"], row["programa"], row["curso"], row["instructor"], row["region"])
+        row["comentarios"] = comment_counts.get(key, 0)
     period = cutoff.strftime("%Y-%m")
     return {
         "data_kind": "satisfaction",
