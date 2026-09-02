@@ -5,6 +5,7 @@ from decimal import Decimal
 from unittest.mock import patch
 
 import duckdb
+import pandas as pd
 from fastapi import HTTPException
 from starlette.datastructures import UploadFile
 
@@ -655,6 +656,62 @@ class RunSqlTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["output_files"], [])
         self.assertEqual(result["rows"], [])
         self.assertEqual(result["columns"], [])
+        self.assertEqual(result["firebase_publish"], publication)
+
+    async def test_satisfaction_start_uses_cutoff_without_parameter_table(self):
+        sql = """
+        CREATE OR REPLACE TABLE resultados_satisfaccion AS
+        SELECT
+            TRY_CAST(fecha AS TIMESTAMP) AS fecha,
+            programa, curso, instructor, region,
+            TRY_CAST(dominio AS DOUBLE) AS dominio,
+            TRY_CAST(comunicacion AS DOUBLE) AS comunicacion,
+            NULL::DOUBLE AS interes,
+            TRY_CAST(participacion AS DOUBLE) AS participacion,
+            TRY_CAST(resolucion AS DOUBLE) AS resolucion,
+            TRY_CAST(recomendacion AS DOUBLE) AS recomendacion,
+            comentario
+        FROM encuesta_form;
+        """
+        rules_sql = """
+        CREATE OR REPLACE TABLE encuesta_form AS
+        SELECT * FROM read_xlsx('/fuentes/Encuesta.xlsx', sheet = 'Respuestas');
+        """ + sql
+        workbook = io.BytesIO()
+        pd.DataFrame(
+            [
+                ["2026-08-20", "Programa", "Curso", "Ana", "Norte", 5, 5, 5, 5, 10, "Excelente"],
+                ["2026-09-02", "Programa", "Curso", "Ana", "Norte", 1, 1, 1, 1, 0, "Fuera del corte"],
+            ],
+            columns=[
+                "fecha", "programa", "curso", "instructor", "region",
+                "dominio", "comunicacion", "participacion", "resolucion",
+                "recomendacion", "comentario",
+            ],
+        ).to_excel(workbook, index=False, sheet_name="Respuestas")
+        workbook.seek(0)
+        publication = {
+            "project_id": "capacitaciones-api",
+            "period": "2026-08",
+            "category": "encuesta_de_satisfaccion",
+            "metric_rows": 1,
+        }
+        with patch("app.main.publish_dashboard", return_value=publication) as publish:
+            result = await execute(
+                sql=sql,
+                files=[UploadFile(workbook, filename="Encuesta.xlsx")],
+                sql_filename="Encuesta de satisfaccion.sql",
+                rules_sql=rules_sql,
+                cutoff_date="2026-08-27",
+                publish_to_firebase=True,
+                publication_name="Encuesta de satisfacción",
+                report_type="s",
+            )
+
+        dataset = publish.call_args.args[0]
+        self.assertEqual(dataset["cutoff_date"], "2026-08-27")
+        self.assertEqual(dataset["response_count"], 1)
+        self.assertEqual(dataset["progress_percentage"], 100.0)
         self.assertEqual(result["firebase_publish"], publication)
 
     async def test_publication_name_and_collection_do_not_change_source_table(self):

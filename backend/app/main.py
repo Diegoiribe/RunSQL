@@ -673,11 +673,20 @@ async def execute(
             status_code=400,
             detail="Usa start --d(AAAA-MM-DD) para indicar la fecha de corte.",
         )
+    source_category, default_category_label = category_from_filename(sql_filename)
+    effective_report_type = report_type or (
+        "s" if source_category == "encuesta_de_satisfaccion"
+        else "e" if source_category == "eic_administrativa"
+        else "c"
+    )
     effective_sql = sql
     if cutoff_date:
         try:
             validate_cutoff_date(cutoff_date)
-            effective_sql = apply_cutoff_date(sql, cutoff_date)
+            # Las encuestas no declaran parametros_<categoria>: su tabla canónica
+            # conserva la fecha de cada respuesta y el agregador aplica el corte.
+            if effective_report_type != "s":
+                effective_sql = apply_cutoff_date(sql, cutoff_date)
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
 
@@ -839,7 +848,6 @@ async def execute(
             records = records[:preview_limit]
         firebase_result = None
         if publish_to_firebase:
-            source_category, default_category_label = category_from_filename(sql_filename)
             category, category_label = category_from_filename(
                 publication_name or sql_filename
             )
@@ -856,11 +864,6 @@ async def execute(
                 )
             try:
                 cutoff = validate_cutoff_date(cutoff_date)
-                effective_report_type = report_type or (
-                    "s" if source_category == "encuesta_de_satisfaccion"
-                    else "e" if source_category == "eic_administrativa"
-                    else "c"
-                )
                 if effective_report_type == "s":
                     dataset = build_satisfaction_dashboard_dataset(
                         connection, source_category, default_category_label, cutoff
