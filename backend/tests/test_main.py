@@ -12,6 +12,7 @@ from app.catalog import build_catalog, definition_targets
 from app.firebase_publish import (
     _comment_labels,
     _is_substantive_comment,
+    _proposal_for,
     _publish_dashboard,
     _safe,
     _tabular_payload,
@@ -330,6 +331,8 @@ class RunSqlTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(
             any(row["record_type"] == "theme" for row in dataset["detail_rows"])
         )
+        opportunity = next(row for row in dataset["detail_rows"] if row["sentiment"] == "negative")
+        self.assertTrue(opportunity["proposal"])
         self.assertEqual(sum(row["comentarios"] for row in dataset["metrics"]), 2)
         connection.close()
 
@@ -351,6 +354,10 @@ class RunSqlTests(unittest.IsolatedAsyncioTestCase):
             "negative",
         )
         self.assertEqual(
+            _comment_labels("Excelente curso, pero deben mejorar los materiales para práctica.")[0],
+            "Equipo y materiales",
+        )
+        self.assertEqual(
             _comment_labels("Dominio de los temas, con un carisma impresionante y conecta muy rápido con las personas.")[1],
             "positive",
         )
@@ -370,6 +377,8 @@ class RunSqlTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(_is_substantive_comment("Excelente explicación"))
         self.assertFalse(_is_substantive_comment("No tengo comentarios"))
         self.assertFalse(_is_substantive_comment("Sin comentarios"))
+        self.assertIn("materiales", _proposal_for("Equipo y materiales", "negative"))
+        self.assertIsNone(_proposal_for("Curso valioso", "positive"))
 
     def test_staff_catalog_accepts_confidential_demographics_and_periods(self):
         rules_sql = """

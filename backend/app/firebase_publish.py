@@ -218,16 +218,30 @@ def _summarize_metrics(rows: Iterable[dict], dimensions: tuple[str, ...]) -> lis
     return sorted(result, key=lambda item: tuple(str(item[key]) for key in dimensions))
 
 
-COMMENT_THEMES = (
-    ("Explicación clara", ("clar", "explica", "comprend", "comunic")),
-    ("Curso valioso", ("excelente", "buen curso", "recom", "interesante", "util")),
-    ("Dominio del tema", ("dominio", "conocimiento", "preparad", "experiencia")),
-    ("Dinámica y participación", ("dinamic", "interactiv", "particip", "actividad", "practic")),
-    ("Atención y dudas", ("duda", "atencion", "apoyo", "disponib", "amable")),
-    ("Equipo y materiales", ("equipo", "material", "herramient", "instalacion", "computadora")),
-    ("Duración y ritmo", ("tiempo", "duracion", "rapido", "lento", "ritmo")),
-    ("Modalidad", ("presencial", "virtual", "linea", "remoto")),
+COMMENT_THEME_PATTERNS = (
+    ("Equipo y materiales", (r"\bequipos?\b", r"\bmaterial(?:es)?\b", r"\bherramientas?\b", r"\binstalaciones?\b", r"\bcomputadoras?\b", r"\baudio\b")),
+    ("Duración y ritmo", (r"\btiempo\b", r"\bduracion\b", r"\brapido\b", r"\blento\b", r"\britmo\b")),
+    ("Explicación clara", (r"\bclar[oa]s?\b", r"\bexplica", r"\bcomprend", r"\bcomunic")),
+    ("Dinámica y participación", (r"\bdinamic", r"\binteractiv", r"\bparticip", r"\bactividades?\b", r"\bpractic")),
+    ("Atención y dudas", (r"\bdudas?\b", r"\batencion\b", r"\bapoyo\b", r"\bdisponib", r"\bamable")),
+    ("Dominio del tema", (r"\bdominio\b", r"\bconocimiento", r"\bpreparad", r"\bexperiencia\b")),
+    ("Modalidad", (r"\bpresencial\b", r"\bvirtual\b", r"\ben linea\b", r"\bremoto\b")),
+    ("Curso valioso", (r"\bexcelente", r"\bbuen curso\b", r"\brecom", r"\binteresante\b", r"\butil(?:es)?\b")),
 )
+COMPILED_COMMENT_THEMES = tuple(
+    (label, tuple(re.compile(pattern) for pattern in patterns))
+    for label, patterns in COMMENT_THEME_PATTERNS
+)
+OPPORTUNITY_PROPOSALS = {
+    "Equipo y materiales": "Verifica equipo, audio y materiales antes de la sesión; prepara una alternativa y reporta cualquier falla.",
+    "Duración y ritmo": "Divide la agenda en bloques, ajusta el ritmo con pausas breves y confirma comprensión antes de avanzar.",
+    "Explicación clara": "Explica cada concepto con una idea central, un ejemplo práctico y una pregunta de comprobación.",
+    "Dinámica y participación": "Integra ejercicios breves, preguntas dirigidas y una actividad práctica en cada bloque.",
+    "Atención y dudas": "Reserva momentos explícitos para preguntas, confirma que cada duda quedó resuelta y ofrece seguimiento.",
+    "Dominio del tema": "Refuerza la preparación del contenido, anticipa preguntas frecuentes y utiliza ejemplos del contexto laboral.",
+    "Modalidad": "Adapta materiales y actividades a la modalidad, y valida previamente acceso, audio y participación.",
+    "Mejora general": "Revisa los comentarios de oportunidad con el instructor y acuerda una acción concreta para la siguiente sesión.",
+}
 POSITIVE_COMMENT_PATTERNS = (
     r"\bexcelente(?:s)?\b", r"\bmuy bien\b", r"\bbuen(?:o|a|os|as)?\b",
     r"\bclar[oa]s?\b", r"\bdinamic[oa]s?\b", r"\bpractic[oa]s?\b",
@@ -276,10 +290,6 @@ def _is_substantive_comment(value: str) -> bool:
 
 def _comment_labels(value: str) -> tuple[str, str]:
     normalized = _comment_key(value)
-    theme = next(
-        (label for label, words in COMMENT_THEMES if any(word in normalized for word in words)),
-        "Comentario general",
-    )
     positive_score = sum(bool(re.search(pattern, normalized)) for pattern in POSITIVE_COMMENT_PATTERNS)
     negative_score = sum(bool(re.search(pattern, normalized)) for pattern in NEGATIVE_COMMENT_PATTERNS)
     if negative_score:
@@ -288,11 +298,19 @@ def _comment_labels(value: str) -> tuple[str, str]:
         sentiment = "positive"
     else:
         sentiment = "neutral"
-    if theme == "Comentario general" and sentiment == "negative":
-        theme = "Mejora general"
-    elif theme == "Comentario general" and sentiment == "positive":
-        theme = "Valoración positiva"
+    theme_scores = [
+        (sum(bool(pattern.search(normalized)) for pattern in patterns), -index, label)
+        for index, (label, patterns) in enumerate(COMPILED_COMMENT_THEMES)
+        if sentiment != "negative" or label != "Curso valioso"
+    ]
+    best_score, _, theme = max(theme_scores, default=(0, 0, "Comentario general"))
+    if best_score == 0:
+        theme = "Mejora general" if sentiment == "negative" else "Valoración positiva" if sentiment == "positive" else "Comentario general"
     return theme, sentiment
+
+
+def _proposal_for(theme: str, sentiment: str) -> str | None:
+    return OPPORTUNITY_PROPOSALS.get(theme) if sentiment == "negative" else None
 
 
 def _build_comment_details(rows: list[dict]) -> list[dict]:
@@ -304,6 +322,7 @@ def _build_comment_details(rows: list[dict]) -> list[dict]:
         if not _is_substantive_comment(comment):
             continue
         theme, sentiment = _comment_labels(comment)
+        proposal = _proposal_for(theme, sentiment)
         month = str(row.get("fecha") or "")[:7]
         scope = (
             month, row["programa"], row["curso"], row["instructor"], row["region"],
@@ -317,6 +336,7 @@ def _build_comment_details(rows: list[dict]) -> list[dict]:
                 "instructor": row["instructor"], "region": row["region"],
                 "recomendacion": None, "sentiment": sentiment, "theme": theme,
                 "count": 0, "comentario": None, "example": comment,
+                "proposal": proposal,
             },
         )
         item["count"] += 1
@@ -328,7 +348,7 @@ def _build_comment_details(rows: list[dict]) -> list[dict]:
                     "instructor": row["instructor"], "region": row["region"],
                     "recomendacion": row["recomendacion"], "sentiment": sentiment,
                     "theme": theme, "count": 1, "comentario": comment,
-                    "example": comment,
+                    "example": comment, "proposal": proposal,
                 }
             )
             recent_per_scope[scope] = recent_per_scope.get(scope, 0) + 1
