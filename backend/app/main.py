@@ -427,6 +427,7 @@ def dashboard_category(period: str, category: str) -> dict:
             "nps": float(metadata.get("nps") or 0),
             "scoreFiveResponses": int(metadata.get("score_five_responses") or 0),
             "npsScaleStatus": str(metadata.get("nps_scale_status") or ""),
+            "publicationRevision": int(metadata.get("publication_revision") or 1),
         }
     except HTTPException:
         raise
