@@ -563,6 +563,15 @@ def build_satisfaction_dashboard_dataset(
             "No se encontró resultados_satisfaccion. El SQL debe generar la tabla canónica de encuestas."
         )
     quoted_table = table.replace('"', '""')
+    table_columns = {
+        row[1]
+        for row in connection.execute(f'PRAGMA table_info("{quoted_table}")').fetchall()
+    }
+    scale_expression = (
+        "LOWER(TRIM(COALESCE(CAST(escala_recomendacion AS VARCHAR), '1-10')))"
+        if "escala_recomendacion" in table_columns
+        else "'1-10'"
+    )
     cutoff_text = cutoff.isoformat()
     metrics = list(
         _records(
@@ -585,10 +594,24 @@ def build_satisfaction_dashboard_dataset(
                     COUNT(CASE WHEN participacion BETWEEN 1 AND 5 THEN 1 END)::BIGINT AS participacion_n,
                     SUM(CASE WHEN resolucion BETWEEN 1 AND 5 THEN resolucion ELSE 0 END)::DOUBLE AS resolucion_suma,
                     COUNT(CASE WHEN resolucion BETWEEN 1 AND 5 THEN 1 END)::BIGINT AS resolucion_n,
-                    COUNT(CASE WHEN recomendacion BETWEEN 0 AND 10 THEN 1 END)::BIGINT AS nps_validas,
-                    COUNT(CASE WHEN recomendacion BETWEEN 9 AND 10 THEN 1 END)::BIGINT AS promotores,
-                    COUNT(CASE WHEN recomendacion BETWEEN 7 AND 8 THEN 1 END)::BIGINT AS pasivos,
-                    COUNT(CASE WHEN recomendacion BETWEEN 0 AND 6 THEN 1 END)::BIGINT AS detractores,
+                    COUNT(CASE WHEN
+                        ({scale_expression} = '1-5' AND recomendacion BETWEEN 1 AND 5)
+                        OR ({scale_expression} <> '1-5' AND recomendacion BETWEEN 0 AND 10)
+                    THEN 1 END)::BIGINT AS nps_validas,
+                    COUNT(CASE WHEN
+                        ({scale_expression} = '1-5' AND recomendacion = 5)
+                        OR ({scale_expression} <> '1-5' AND recomendacion BETWEEN 9 AND 10)
+                    THEN 1 END)::BIGINT AS promotores,
+                    COUNT(CASE WHEN
+                        ({scale_expression} = '1-5' AND recomendacion = 4)
+                        OR ({scale_expression} <> '1-5' AND recomendacion BETWEEN 7 AND 8)
+                    THEN 1 END)::BIGINT AS pasivos,
+                    COUNT(CASE WHEN
+                        ({scale_expression} = '1-5' AND recomendacion BETWEEN 1 AND 3)
+                        OR ({scale_expression} <> '1-5' AND recomendacion BETWEEN 0 AND 6)
+                    THEN 1 END)::BIGINT AS detractores,
+                    COUNT(CASE WHEN {scale_expression} = '1-5' AND recomendacion BETWEEN 1 AND 5 THEN 1 END)::BIGINT AS nps_validas_1_5,
+                    COUNT(CASE WHEN {scale_expression} <> '1-5' AND recomendacion BETWEEN 0 AND 10 THEN 1 END)::BIGINT AS nps_validas_1_10,
                     COUNT(CASE WHEN recomendacion = 5 THEN 1 END)::BIGINT AS respuestas_cinco,
                     MIN(fecha)::DATE AS primera_respuesta,
                     MAX(fecha)::DATE AS ultima_respuesta
@@ -608,6 +631,8 @@ def build_satisfaction_dashboard_dataset(
     promoters = sum(int(row["promotores"]) for row in metrics)
     detractors = sum(int(row["detractores"]) for row in metrics)
     nps_valid = sum(int(row["nps_validas"]) for row in metrics)
+    nps_valid_1_5 = sum(int(row["nps_validas_1_5"]) for row in metrics)
+    nps_valid_1_10 = sum(int(row["nps_validas_1_10"]) for row in metrics)
     score_fives = sum(int(row["respuestas_cinco"]) for row in metrics)
     isa = round(100.0 * rubric_sum / (5 * rubric_count), 2) if rubric_count else 0.0
     nps = round(100.0 * (promoters - detractors) / nps_valid, 2) if nps_valid else 0.0
@@ -651,7 +676,11 @@ def build_satisfaction_dashboard_dataset(
         "response_count": response_count, "isa": isa, "nps": nps,
         "nps_valid_responses": nps_valid, "nps_promoter_responses": promoters,
         "nps_detractor_responses": detractors, "score_five_responses": score_fives,
-        "nps_scale_status": "conventional_0_10",
+        "nps_scale_status": (
+            "mixed_1_5_0_10" if nps_valid_1_5 and nps_valid_1_10
+            else "adapted_1_5" if nps_valid_1_5
+            else "conventional_0_10"
+        ),
         "programs": sorted({str(row["programa"]) for row in metrics}),
         "courses": sorted({str(row["curso"]) for row in metrics}),
         "instructors": sorted({str(row["instructor"]) for row in metrics}),

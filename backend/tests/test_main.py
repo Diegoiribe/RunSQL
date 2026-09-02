@@ -359,6 +359,28 @@ class RunSqlTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(comments), 6)
         self.assertEqual(sum(row["count"] for row in themes), 6)
 
+    def test_satisfaction_dataset_supports_adapted_one_to_five_nps(self):
+        connection = duckdb.connect(":memory:")
+        connection.execute(
+            """
+            CREATE TABLE resultados_satisfaccion AS
+            SELECT * FROM (VALUES
+                (TIMESTAMP '2026-08-10 10:00:00', 'DDC', 'DDC Día 2', 'Equipo', 'Ixtapan', NULL::DOUBLE, NULL::DOUBLE, NULL::DOUBLE, NULL::DOUBLE, NULL::DOUBLE, 5, 'Excelente', '1-5'),
+                (TIMESTAMP '2026-08-11 10:00:00', 'DDC', 'DDC Día 2', 'Equipo', 'Ixtapan', NULL::DOUBLE, NULL::DOUBLE, NULL::DOUBLE, NULL::DOUBLE, NULL::DOUBLE, 3, 'Puede mejorar', '1-5')
+            ) AS t(fecha, programa, curso, instructor, region, dominio, comunicacion, interes, participacion, resolucion, recomendacion, comentario, escala_recomendacion)
+            """
+        )
+        try:
+            dataset = build_satisfaction_dashboard_dataset(
+                connection, "encuesta_de_satisfaccion", "Encuesta de satisfacción", date(2026, 8, 31)
+            )
+        finally:
+            connection.close()
+
+        self.assertEqual(dataset["nps_valid_responses"], 2)
+        self.assertEqual(dataset["nps"], 0.0)
+        self.assertEqual(dataset["nps_scale_status"], "adapted_1_5")
+
     def test_comment_sentiment_does_not_confuse_improvement_with_an_opportunity(self):
         self.assertEqual(
             _comment_labels("Fue muy amena y participativa. Ideal para mejorar habilidades.")[1],
