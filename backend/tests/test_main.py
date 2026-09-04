@@ -18,6 +18,7 @@ from app.firebase_publish import (
     _publish_dashboard,
     _safe,
     _tabular_payload,
+    PublicationConflictError,
     apply_cutoff_date,
     build_dashboard_dataset,
     build_eic_dashboard_dataset,
@@ -25,7 +26,17 @@ from app.firebase_publish import (
     decode_tabular_payload,
     result_table_name,
 )
-from app.main import execute, match_definition, match_family, normalize_quoted_identifiers, prepare_exports, prepare_statements, split_sql_script, validate_sql
+from app.main import (
+    execute,
+    match_definition,
+    match_family,
+    normalize_quoted_identifiers,
+    prepare_exports,
+    prepare_statements,
+    read_dataframe,
+    split_sql_script,
+    validate_sql,
+)
 
 RULES_SQL = """
 -- La aplicación registra almacenista_p.
@@ -146,6 +157,61 @@ class RunSqlTests(unittest.IsolatedAsyncioTestCase):
             normalize_quoted_identifiers(statement),
             'SELECT "Datos de Pax Reales (Se obtiene desde Tabla Listas)" FROM "Capacitaciones EIC"',
         )
+
+    def test_eic_master_accepts_any_restricted_client_workbook(self):
+        rules_sql = """
+        CREATE OR REPLACE TABLE eic_cotizaciones_fuente AS
+        SELECT * FROM read_xlsx('/fuentes/EIC - Restringida - Vista Cliente.xlsx', sheet = 'Estatus de cotizaciones', range = 'A6:K');
+        CREATE OR REPLACE TABLE eic_capacitaciones_fuente AS
+        SELECT * FROM read_xlsx('/fuentes/EIC - Restringida - Vista Cliente.xlsx', sheet = 'Capacitaciones en seguimiento', range = 'A6:AF');
+        CREATE OR REPLACE TABLE eic_pagos_fuente AS
+        SELECT * FROM read_xlsx('/fuentes/EIC - Restringida - Vista Cliente.xlsx', sheet = 'Pagos', range = 'A5:U');
+        CREATE OR REPLACE TABLE eic_tablero_fuente AS
+        SELECT * FROM read_xlsx('/fuentes/EIC - Restringida - Vista Cliente.xlsx', sheet = 'Tablero', range = 'A4:U');
+        """
+        definitions, _ = build_catalog(rules_sql, "EIC Administrativa.sql")
+        definition = match_definition(
+            "EIC - Restringida - Vista Cliente Estrategia y Crecimiento.xlsx",
+            definitions,
+        )
+        self.assertIsNotNone(definition)
+        self.assertEqual(len(definition_targets(definition)), 4)
+
+    def test_eic_tablero_detects_shifted_header_and_normalizes_alias(self):
+        workbook = io.BytesIO()
+        rows = [
+            ["Dirección:", "DIRECCION DE ESTRATEGIA Y CRECIMIENTO GC", None, None],
+            ["Empresa:", "COPPEL SA DE CV", None, None],
+            [None, None, "Solicitados en Plan Autorizado", None],
+            [
+                "Empresa", "Dirección C-Level", "DNCs", "Extra Plan", "Cursos",
+                "Eventos", "Programas Ejecutivos", "Certificaciones", "Membresía",
+                "Suscripción", "Suma DNCs", "# Pax Proyectados",
+                "Capacitaciones Imp-Proceso", "Eventos Imp-Proceso", "#Pax Reales",
+                "% Avance", "Presupuesto Asignado", "Inversión Proyectada",
+                "Inversión Actual", "Presupuesto por ejercer",
+                "% Avance de Presupuesto",
+            ],
+            [
+                "COPPEL SA DE CV", "Dirección de Transformación", "10", None,
+                None, None, None, None, None, None, None, None, None, None, None,
+                None, "100", None, "25", None, None,
+            ],
+        ]
+        rows = [row + [None] * (21 - len(row)) for row in rows]
+        pd.DataFrame(rows).to_excel(
+            workbook, index=False, header=False, sheet_name="Tablero"
+        )
+        dataframe = read_dataframe(
+            "EIC - Restringida - Vista Cliente Estrategia y Crecimiento.xlsx",
+            workbook.getvalue(),
+            "Tablero",
+            "A4:U",
+            table_name="eic_tablero_fuente",
+        )
+        self.assertIn("Dirección C-Level", dataframe.columns)
+        self.assertIn("Presupuesto Autorizado", dataframe.columns)
+        self.assertEqual(dataframe.iloc[0]["DNCs"], "10")
 
     def test_firestore_tabular_payload_does_not_nest_arrays(self):
         payload = _tabular_payload(
@@ -641,6 +707,77 @@ class RunSqlTests(unittest.IsolatedAsyncioTestCase):
             decode_tabular_payload(details.to_dict()),
             [{"record_type": "comment", "comentario": "Excelente curso"}],
         )
+
+    def test_tienda_replacement_requires_same_name_and_exact_cutoff(self):
+        client = FakeFirestore()
+        dataset = {
+            "period": "2026-07",
+            "category": "almacenista",
+            "category_label": "Almacenista",
+            "cutoff_date": "2026-07-30",
+            "year": 2026,
+            "month": 7,
+            "report_type": "c",
+            "total": 1,
+            "completed": 1,
+            "pending": 0,
+            "progress_percentage": 100.0,
+            "pending_percentage": 0.0,
+            "positions": [],
+            "regions": [],
+            "courses": [],
+            "metrics": [],
+            "views": {},
+            "pending_rows": [],
+            "detail_rows": [],
+        }
+
+        with patch("app.firebase_publish._firebase_client", return_value=client):
+            _publish_dashboard(dataset)
+            with self.assertRaisesRegex(
+                PublicationConflictError,
+                "nombre y la fecha de corte",
+            ):
+                _publish_dashboard({**dataset, "cutoff_date": "2026-07-31"})
+
+    def test_one_name_replacement_keeps_existing_collection(self):
+        client = FakeFirestore()
+        first = {
+            "period": "2026-08",
+            "category": "direccion_de_administracion_gc",
+            "category_label": "Dirección de Administración GC",
+            "collection_key": "planes_de_capacitacion",
+            "collection_label": "Planes de capacitación",
+            "cutoff_date": "2026-08-31",
+            "year": 2026,
+            "month": 8,
+            "report_type": "e",
+            "total": 1,
+            "completed": 1,
+            "pending": 0,
+            "progress_percentage": 100.0,
+            "pending_percentage": 0.0,
+            "positions": [],
+            "regions": [],
+            "courses": [],
+            "metrics": [],
+            "views": {},
+            "pending_rows": [],
+            "detail_rows": [],
+        }
+
+        with patch("app.firebase_publish._firebase_client", return_value=client):
+            _publish_dashboard(first)
+            replaced = _publish_dashboard(
+                {
+                    **first,
+                    "collection_key": None,
+                    "collection_label": None,
+                }
+            )
+
+        self.assertEqual(replaced["collection_key"], "planes_de_capacitacion")
+        self.assertEqual(replaced["collection_label"], "Planes de capacitación")
 
     async def test_execute_returns_xlsx_exports(self):
         files = [

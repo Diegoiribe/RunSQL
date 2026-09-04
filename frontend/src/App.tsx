@@ -7,6 +7,11 @@ type CatalogFile = {
   required: boolean;
   aliases: string[];
   description: string;
+  targets?: Array<{
+    table_name: string;
+    sheet_name: string | number;
+    range_name: string;
+  }>;
 };
 
 type CatalogFamily = {
@@ -273,7 +278,19 @@ export default function App() {
     const stem = normalize(fileStem(file.name));
     const definition = catalog?.files.find((item) => {
       const names = [item.name, item.key, ...item.aliases].map(normalize);
-      return names.includes(stem);
+      if (names.includes(stem)) return true;
+      const targetTables = new Set(
+        (item.targets ?? []).map((target) => target.table_name.toLowerCase())
+      );
+      const isEicMaster = [
+        'eic_cotizaciones_fuente',
+        'eic_capacitaciones_fuente',
+        'eic_pagos_fuente',
+        'eic_tablero_fuente'
+      ].every((table) => targetTables.has(table));
+      return (
+        isEicMaster && stem.startsWith('eic restringida vista cliente')
+      );
     });
     if (definition) return { key: definition.key };
 
@@ -707,7 +724,9 @@ export default function App() {
       setTerminalLines((lines) => [
         ...lines,
         'upload                    abrir un archivo SQL',
-        'start --d(fecha) [--t(c|s|e)] [--n(nombre) | --n(nombre actual, nombre nuevo)] [--l(colección)]',
+        'start --d(fecha) [--t(c|s|e)] [--n(nombre[, nombre nuevo])] [--l(colección)]',
+        '--n(nombre)               reemplazar conservando el mismo nombre',
+        '--n(actual, nuevo)        reemplazar y cambiar el nombre visible',
         'show tables               listar tablas generadas',
         'show <tabla> limit <x>     previsualizar y ordenar una tabla',
         'SELECT / WITH              ejecutar una consulta',

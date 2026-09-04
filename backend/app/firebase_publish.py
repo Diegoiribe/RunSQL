@@ -27,8 +27,21 @@ RESULT_TABLE_ALIASES = {
     "gerente_zona": ("resultados_capacitacion_gerente",),
 }
 
+TIENDA_REPORT_CATEGORIES = {
+    "almacenista",
+    "asesor",
+    "cajero",
+    "cobranza",
+    "gerente",
+    "gerente_zona",
+}
+
 
 class FirebaseConfigurationError(RuntimeError):
+    pass
+
+
+class PublicationConflictError(ValueError):
     pass
 
 
@@ -765,6 +778,8 @@ def _commit_operations(client, operations: list[tuple[str, object, dict | None]]
 def publish_dashboard(dataset: dict) -> dict:
     try:
         return _publish_dashboard(dataset)
+    except PublicationConflictError:
+        raise
     except FirebaseConfigurationError:
         raise
     except Exception as error:
@@ -774,6 +789,7 @@ def publish_dashboard(dataset: dict) -> dict:
 
 
 def _publish_dashboard(dataset: dict) -> dict:
+    dataset = dict(dataset)
     client = _firebase_client()
     period_ref = client.collection("periods").document(dataset["period"])
     category_ref = period_ref.collection("categories").document(dataset["category"])
@@ -783,6 +799,41 @@ def _publish_dashboard(dataset: dict) -> dict:
         if getattr(existing_snapshot, "exists", False)
         else {}
     )
+    catalog_ref = client.collection("dashboard_categories").document(
+        dataset["category"]
+    )
+    catalog_snapshot = catalog_ref.get()
+    catalog_metadata = (
+        catalog_snapshot.to_dict() or {}
+        if getattr(catalog_snapshot, "exists", False)
+        else {}
+    )
+
+    # Re-publicar con --n(nombre) conserva la colección ya asignada. Esto hace
+    # que el segundo argumento de --n sea realmente opcional y evita que un
+    # capítulo salga de su colección por omitir --l en una actualización.
+    if not dataset.get("collection_key") and catalog_metadata.get("collection_key"):
+        dataset["collection_key"] = catalog_metadata.get("collection_key")
+        dataset["collection_label"] = catalog_metadata.get("collection_label")
+
+    is_tienda_report = (
+        dataset.get("collection_key") == "tienda"
+        or (
+            dataset.get("report_type") in {None, "c"}
+            and dataset["category"] in TIENDA_REPORT_CATEGORIES
+        )
+    )
+    if (
+        existing_metadata
+        and is_tienda_report
+        and existing_metadata.get("cutoff_date") != dataset["cutoff_date"]
+    ):
+        raise PublicationConflictError(
+            "Los reportes de Tienda sólo se reemplazan cuando coinciden el "
+            "nombre y la fecha de corte. Usa la fecha publicada actualmente "
+            "o cambia el nombre del reporte."
+        )
+
     replaced_existing = bool(existing_metadata)
     same_cutoff_replacement = (
         replaced_existing
@@ -930,10 +981,7 @@ def _publish_dashboard(dataset: dict) -> dict:
         },
         merge=True,
     )
-    history_ref = client.collection("dashboard_categories").document(
-        dataset["category"]
-    )
-    history_ref.set(
+    catalog_ref.set(
         {
             "category": dataset["category"],
             "category_label": dataset["category_label"],

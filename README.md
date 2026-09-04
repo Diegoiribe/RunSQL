@@ -136,10 +136,11 @@ Firestore. El nombre del SQL determina la categoría (`Asesor.sql` publica
 El nombre público y la colección se pueden indicar sin renombrar el SQL:
 
 ```text
-start --d(2026-07-30) --t(e) --n(EIC Presupuesto) --l(Staff)
+start --d(2026-09-02) --t(e) --n(Dirección de Estrategia y crecimiento) --l(Planes de capacitación)
 ```
 
-- `--n(nombre)` define el nombre visible y la clave independiente del reporte.
+- `--n(nombre)` define la identidad y el nombre visible. Si el reporte ya existe,
+  lo reemplaza conservando el mismo nombre; el segundo parámetro no es obligatorio.
 - `--n(nombre actual, nombre nuevo)` reemplaza la categoría existente identificada
   por el nombre actual y, después de publicar, la muestra con el nombre nuevo.
 - `--l(colección)` lo vincula mediante metadatos con una colección existente.
@@ -151,6 +152,23 @@ start --d(2026-07-30) --t(e) --n(EIC Presupuesto) --l(Staff)
 
 El vínculo no reemplaza la colección: cada reporte conserva su propio documento
 y DataStore puede agrupar todos los que compartan `collection_key`.
+
+Para los reportes EIC se carga una sola vez `EIC Maestro.sql`. Después puede
+recibir cualquier libro llamado `EIC - Restringida - Vista Cliente <C-Level>.xlsx`.
+RunSQL detecta encabezados desplazados y normaliza alias conocidos, mientras
+`--n(...)` determina qué capítulo C-Level se reemplaza o se crea.
+
+En **Planes de capacitación** y **Encuesta de satisfacción**, un solo nombre
+permite actualizar el reporte con la misma identidad. En **Tienda**, un reemplazo
+requiere que coincidan el nombre y la fecha exacta de corte; RunSQL detiene la
+publicación si intentara sobrescribir el mismo periodo con otra fecha.
+
+La especificación completa del reporte administrativo está en
+[`DIRECCION_ADMINISTRACION_GC.md`](DIRECCION_ADMINISTRACION_GC.md).
+
+La documentación funcional y técnica de satisfacción, incluida la clasificación
+de comentarios, oportunidades y propuestas, está en
+[`ENCUESTA_SATISFACCION.md`](ENCUESTA_SATISFACCION.md).
 
 La configuración web de Firebase identifica el proyecto, pero no concede al
 backend permiso para escribir. Para publicar de forma segura:

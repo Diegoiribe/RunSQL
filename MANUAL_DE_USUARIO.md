@@ -103,8 +103,8 @@ Las opciones pueden escribirse en cualquier orden.
 |---|:---:|---|---|
 | `--d(fecha)` | Sí | Fecha de corte en formato `AAAA-MM-DD`. | `--d(2026-08-31)` |
 | `--t(tipo)` | Recomendado | Estructura del reporte: `c`, `s` o `e`. | `--t(e)` |
-| `--n(nombre)` | No | Nombre visible del reporte en DataStore. | `--n(Estatus planes de capacitación)` |
-| `--n(nombre actual, nombre nuevo)` | No | Reemplaza el reporte actual y cambia su nombre visible sin crear un duplicado. | `--n(Estatus planes de capacitación, Dirección de Administración GC)` |
+| `--n(nombre)` | No | Identidad y nombre visible. Si ya existe, lo reemplaza conservando el mismo nombre. | `--n(Dirección de Administración GC)` |
+| `--n(nombre actual, nombre nuevo)` | No | El segundo nombre es opcional; cuando se incluye, reemplaza el reporte actual y cambia su nombre visible sin crear un duplicado. | `--n(Estatus planes de capacitación, Dirección de Administración GC)` |
 | `--l(colección)` | No | Colección en la que aparecerá como capítulo o pestaña. | `--l(Staff)` |
 
 ### Tipos de reporte
@@ -132,6 +132,9 @@ start --d(2026-08-31) --t(c) --n(Reporte de capacitación Staff) --l(Staff)
 start --d(2026-08-31) --t(s) --n(Encuesta de satisfacción)
 ```
 
+Consulta el flujo completo de fuentes, métricas, comentarios, oportunidades y
+propuestas en [`ENCUESTA_SATISFACCION.md`](ENCUESTA_SATISFACCION.md).
+
 #### Estatus de planes de capacitación
 
 ```text
@@ -151,6 +154,15 @@ start --d(2026-08-31)
 ### Nombre del reporte
 
 `--n(...)` controla el nombre que verá la persona en DataStore. Permite conservar el nombre técnico del archivo SQL sin mostrarlo en el reporte.
+
+El segundo parámetro es opcional:
+
+- `--n(nombre)` reemplaza usando el mismo nombre.
+- `--n(nombre actual, nombre nuevo)` reemplaza y renombra la presentación.
+
+Para **Planes de capacitación** y **Encuesta de satisfacción**, el formato de un
+solo nombre es suficiente para una actualización normal. Para **Tienda**, el
+reemplazo exige que coincidan el nombre y la fecha exacta de corte.
 
 ```text
 EIC Administrativa.sql
@@ -383,7 +395,9 @@ Comprueba, en este orden:
 |---|---|
 | Categoría nueva + periodo nuevo | Se crea un corte. |
 | Categoría existente + periodo nuevo | Se agrega el mes al histórico. |
-| Misma categoría + mismo periodo | Se reemplaza el corte anterior. |
+| Planes de capacitación o Encuesta + mismo nombre y periodo | Se reemplaza el corte anterior conservando el nombre. |
+| Tienda + mismo nombre y misma fecha exacta | Se reemplaza el corte anterior. |
+| Tienda + mismo nombre y otra fecha dentro del mismo mes | Se detiene la publicación para evitar una sobrescritura accidental. |
 | Mismo `--l(...)` + distinto `--n(...)` | Se agrega otro capítulo a la colección. |
 | Sin `--l(...)` | El reporte aparece de forma independiente. |
 

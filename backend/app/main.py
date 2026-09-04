@@ -43,6 +43,27 @@ MAX_FILE_SIZE = MAX_FILE_SIZE_MB * 1024 * 1024
 MAX_RESULT_ROWS = 10_000
 MAX_TOTAL_UPLOAD_MB = int(os.getenv("MAX_TOTAL_UPLOAD_MB", "4" if IS_VERCEL else "500"))
 ALLOWED_EXTENSIONS = {".csv", ".xlsx", ".xlsm"}
+EIC_SOURCE_TABLES = {
+    "eic_cotizaciones_fuente": {
+        "anchors": {"identificador", "estatus de la necesidad", "gerencia divisional"},
+        "minimum": 2,
+    },
+    "eic_capacitaciones_fuente": {
+        "anchors": {"identificador", "estatus grupo", "gerencia divisional"},
+        "minimum": 2,
+    },
+    "eic_pagos_fuente": {
+        "anchors": {"identificador", "concepto de pago", "gerencia divisional"},
+        "minimum": 2,
+    },
+    "eic_tablero_fuente": {
+        "anchors": {"empresa", "direccion c level", "dncs", "inversion actual"},
+        "minimum": 3,
+    },
+}
+EIC_COLUMN_ALIASES = {
+    "presupuesto asignado": "Presupuesto Autorizado",
+}
 BLOCKED_SQL = re.compile(
     r"\b(insert|update|delete|merge|create|alter|drop|truncate|copy|attach|detach|"
     r"install|load|pragma|call|export|import|vacuum|read_csv|read_csv_auto|"
@@ -90,6 +111,14 @@ def match_definition(
         accepted = {normalize_name(definition.name), normalize_name(definition.key)}
         accepted.update(normalize_name(alias) for alias in definition.aliases)
         if candidate in accepted:
+            return definition
+        target_tables = {
+            target.table_name for target in definition_targets(definition)
+        }
+        if (
+            EIC_SOURCE_TABLES.keys() <= target_tables
+            and candidate.startswith("eic restringida vista cliente")
+        ):
             return definition
     return None
 
@@ -275,12 +304,72 @@ def prepare_exports(sql: str) -> list[tuple[str, str, str]]:
     return exports
 
 
+def _excel_columns(range_name: str) -> str | None:
+    if not range_name:
+        return None
+    range_match = re.fullmatch(
+        r"([A-Za-z]+)\d+:([A-Za-z]+)(?:\d+)?", range_name.strip()
+    )
+    if not range_match:
+        raise ValueError(f"el rango '{range_name}' no es compatible")
+    first_column, last_column = range_match.groups()
+    return f"{first_column}:{last_column}"
+
+
+def _eic_header_row(
+    workbook: pd.ExcelFile,
+    sheet_name: str | int,
+    usecols: str | None,
+    table_name: str,
+) -> int:
+    preview = pd.read_excel(
+        workbook,
+        sheet_name=sheet_name,
+        dtype=str,
+        header=None,
+        nrows=30,
+        usecols=usecols,
+    )
+    specification = EIC_SOURCE_TABLES[table_name]
+    anchors = specification["anchors"]
+    minimum = int(specification["minimum"])
+    best_row = -1
+    best_score = -1
+    for row_number, row in preview.iterrows():
+        labels = {
+            normalize_name(str(value))
+            for value in row.tolist()
+            if pd.notna(value)
+        }
+        score = len(labels & anchors)
+        if score > best_score:
+            best_row = int(row_number)
+            best_score = score
+    if best_score < minimum:
+        expected = ", ".join(sorted(anchors))
+        raise ValueError(
+            f"no se encontró el encabezado de {table_name}; "
+            f"se esperaban al menos {minimum} de: {expected}"
+        )
+    return best_row
+
+
+def _normalize_eic_columns(dataframe: pd.DataFrame) -> pd.DataFrame:
+    renames = {
+        column: EIC_COLUMN_ALIASES[normalize_name(str(column))]
+        for column in dataframe.columns
+        if normalize_name(str(column)) in EIC_COLUMN_ALIASES
+    }
+    return dataframe.rename(columns=renames)
+
+
 def read_dataframe(
     filename: str,
     payload: bytes,
     sheet_name: str | int = 0,
     range_name: str = "",
     workbook: pd.ExcelFile | None = None,
+    table_name: str = "",
 ) -> pd.DataFrame:
     extension = Path(filename).suffix.lower()
     try:
@@ -291,23 +380,43 @@ def read_dataframe(
                 dataframe = pd.read_csv(io.BytesIO(payload), encoding="latin-1")
         else:
             skiprows = None
-            usecols = None
-            if range_name:
-                range_match = re.fullmatch(
-                    r"([A-Za-z]+)(\d+):([A-Za-z]+)(?:\d+)?", range_name.strip()
+            usecols = _excel_columns(range_name)
+            if table_name in EIC_SOURCE_TABLES:
+                active_workbook = workbook
+                should_close = active_workbook is None
+                if active_workbook is None:
+                    active_workbook = pd.ExcelFile(io.BytesIO(payload), engine="openpyxl")
+                try:
+                    skiprows = _eic_header_row(
+                        active_workbook, sheet_name, usecols, table_name
+                    )
+                    dataframe = pd.read_excel(
+                        active_workbook,
+                        sheet_name=sheet_name,
+                        dtype=str,
+                        skiprows=skiprows,
+                        usecols=usecols,
+                    )
+                finally:
+                    if should_close:
+                        active_workbook.close()
+                dataframe = _normalize_eic_columns(dataframe)
+            else:
+                if range_name:
+                    range_match = re.fullmatch(
+                        r"([A-Za-z]+)(\d+):([A-Za-z]+)(?:\d+)?", range_name.strip()
+                    )
+                    if not range_match:
+                        raise ValueError(f"el rango '{range_name}' no es compatible")
+                    _, first_row, _ = range_match.groups()
+                    skiprows = max(int(first_row) - 1, 0)
+                dataframe = pd.read_excel(
+                    workbook if workbook is not None else io.BytesIO(payload),
+                    sheet_name=sheet_name,
+                    dtype=str,
+                    skiprows=skiprows,
+                    usecols=usecols,
                 )
-                if not range_match:
-                    raise ValueError(f"el rango '{range_name}' no es compatible")
-                first_column, first_row, last_column = range_match.groups()
-                skiprows = max(int(first_row) - 1, 0)
-                usecols = f"{first_column}:{last_column}"
-            dataframe = pd.read_excel(
-                workbook if workbook is not None else io.BytesIO(payload),
-                sheet_name=sheet_name,
-                dtype=str,
-                skiprows=skiprows,
-                usecols=usecols,
-            )
         dataframe.columns = [
             re.sub(r"\s+", " ", column).strip() if isinstance(column, str) else column
             for column in dataframe.columns
@@ -747,7 +856,13 @@ async def execute(
             targets = definition_targets(definition)
             if extension == ".csv":
                 target_frames = [
-                    (target.table_name, read_dataframe(filename, payload, target.sheet_name, target.range_name))
+                    (
+                        target.table_name,
+                        read_dataframe(
+                            filename, payload, target.sheet_name,
+                            target.range_name, table_name=target.table_name,
+                        ),
+                    )
                     for target in targets
                 ]
             else:
@@ -761,7 +876,7 @@ async def execute(
                                 target.table_name,
                                 read_dataframe(
                                     filename, payload, target.sheet_name,
-                                    target.range_name, workbook,
+                                    target.range_name, workbook, target.table_name,
                                 ),
                             )
                             for target in targets
